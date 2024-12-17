@@ -1,0 +1,505 @@
+import pdb
+from re import L
+import tensorflow as tf
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import ModelCheckpoint
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, LSTM, Dense
+from sklearn.model_selection import train_test_split
+
+from data.data_processing import length_scanner, load_data, one_hot_encoder, \
+    Data_Generator, int_to_smiles, seq_cleaning, smiles_to_int, smiles_cleaning, \
+    amino_to_int, protein_one_hot_encoder
+from models.generative_models import lstm_model, generate
+from utils.utils import apply_thresholds, selfies_one_hot_encoder, \
+    smiles2selfies, write_report, plot_acc_loss, compute_properties, histogram_properties, tanimoto2, \
+    compute_tanimoto_init, filter_unique_molecules, apply_structural_filters, apply_unwanted_substruct_filters
+
+import random
+import argparse as ap
+import pandas as pd
+
+from tqdm import tqdm
+
+import os
+
+def parseArg():
+    '''
+    Parse all the parameters
+    '''
+
+    parser = ap.ArgumentParser()
+
+    parser.add_argument("-i", "--smiles", required=True, type=str, help="path to smiles file.")
+    parser.add_argument("-e", "--epochs", required=True, type=int, help="number of epochs.")
+    parser.add_argument("-v", "--validation_size", required=True, type=float, help="validation set size.")
+    parser.add_argument("-t", "--test_size", required=True, type=float, help="test set size.")
+    parser.add_argument("-b", "--batch_size", required=True, type=int, help="batch size.")
+    parser.add_argument("-s", "--sampling_temperature", required=True, type=float, help="sampling temperature.")
+    parser.add_argument("-q", "--quantity", required=True, type=int, help="amount of molecules to be generated.")
+    parser.add_argument("-n", "--name", required=False, type=str, help="name of generative run.")
+    parser.add_argument("-tl", "--transfer_learning", required=False, action='store_true', help="get best weights from main model and use them on alt dataset.")
+    parser.add_argument("-pa", "--path_alternative", required=False, type=str, help="path to alternative smiles file.")
+    parser.add_argument("-r", "--restart", required=False, type=str, help="restart training from stored weights. Path to weights.")
+    parser.add_argument("-sf", "--selfies", required=False, action='store_true', help="use SELFIES as encoding protocol.")
+    parser.add_argument("-al", "--active_learning", required=False, type=int, help="execute the generation routine in 'al' active learning iterations.")
+    parser.add_argument("-qed", "--druglikeness", required=False, type=float, help="threshold for qed value of generated molecules.")
+    parser.add_argument("-sa", "--sascore", required=False, type=float, help="threshold for sascore value of generated molecules.")
+    parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
+
+    parser.add_argument("-p", "--protein", required=False, action="store_true", help="enable protein generation.")
+
+    args = parser.parse_args()
+
+    smiles = args.smiles
+    num_epochs = args.epochs
+    val_size = args.validation_size
+    test_size = args.test_size
+    batch_size = args.batch_size
+
+    if args.sampling_temperature:
+        sampling_temperature = args.sampling_temperature
+    else:
+        # If we do not provide a sampling temperature, generate a random one from 0.1 to 1.5
+        sampling_temperature = random.uniform(0.1, 1.5)
+
+    quantity = args.quantity
+    name = args.name
+    transfer = args.transfer_learning
+    alt_smiles = args.path_alternative
+    restart = args.restart
+    selfies_form = args.selfies
+    active_learning = args.active_learning
+    qed_t = args.druglikeness
+    sascore_t = args.sascore
+    tanimoto_t = args.tanimoto
+    protein = args.protein
+
+    return smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity, name, transfer, alt_smiles, restart, \
+    selfies_form, active_learning, qed_t, sascore_t, tanimoto_t, protein
+
+
+def split_data(dat, validation_size, test_size, maximum_len, type_seq, char_alph=None):
+    '''
+    Args:
+    - dat: The input data to be split
+    - validation_size: The proportion of the data to be used for validation
+    - test_size: The proportion of the data to be used for testing
+    - maximum_len: Max length
+    - type_seq: Type of sequence we are using
+    - char_alph: List of the unique characters found in a SELFIE
+
+    Operations:
+    - Split the dataset into training, validation and test sets.
+    - One hot encoding of the predictors (x) and target (y)
+
+    Return:
+    - All sets
+    '''
+
+    # Split the dataset into train, test and validation
+    pre_train, validation = train_test_split(dat, test_size=validation_size, random_state=42)
+    train, test = train_test_split(pre_train, test_size=test_size, random_state=42)
+    
+    print("\nTraining set size: ", train.shape[0])
+    print("Validation set size: ", validation.shape[0])
+    print("Test set size: ", test.shape[0])
+    print("Number of possible characters: ", len(int_to_smiles))
+
+    # One-hot-encoding. The resulting object is a 3D Tensor (Number of SMILES x Length of SMILES x Number of characters in a SMILE)
+    if type_seq == 'Protein':
+        train_pred, train_target = protein_one_hot_encoder(sequences=train, max_len=maximum_len, num_char=len(amino_to_int))
+        val_pred, val_target = protein_one_hot_encoder(sequences=validation,  max_len=maximum_len, num_char=len(amino_to_int))
+        test_pred, test_target = protein_one_hot_encoder(sequences=test,  max_len=maximum_len, num_char=len(amino_to_int))
+
+    elif type_seq == 'SELFIE':
+        train_pred, _, train_target = selfies_one_hot_encoder(train, char_alph)
+        val_pred, _, val_target = selfies_one_hot_encoder(validation, char_alph)
+        test_pred, _, test_target = selfies_one_hot_encoder(test, char_alph)
+
+    elif type_seq == 'SMILE':
+        train_pred, train_target = one_hot_encoder(smiles=train, max_len=maximum_len, num_char=len(smiles_to_int))
+        val_pred, val_target = one_hot_encoder(smiles=validation,  max_len=maximum_len, num_char=len(smiles_to_int))
+        test_pred, test_target = one_hot_encoder(smiles=test,  max_len=maximum_len, num_char=len(smiles_to_int))
+
+    return train, validation, test, train_pred, train_target, val_pred, val_target, test_pred, test_target
+
+
+def train_and_evaluate_model(model, train_pred, train_target, val_pred, val_target, test_pred, test_target, b_size, n_epochs, output_directory, name, checkpoint_name, moment, deb):
+    '''
+    Args:
+    - model: The model to be trained and evaluated.
+    - train_pred: The input data for training.
+    - train_target: The ground truth labels for training.
+    - val_pred: The input data for validation.
+    - val_target: The ground truth labels for validation.
+    - test_pred: The input data for testing.
+    - test_target: The ground truth labels for testing.
+    - b_size: The batch size used during training.
+    - n_epochs: The number of epochs for training.
+    - output_directory: The directory to save checkpoints and plots.
+    - name: The name prefix for saved files.
+    - checkpoint_name: The name of the checkpoint file.
+    - moment: The moment of the training (Start, Transfer, Restart)
+    - deb: Debugging mode (run_eagerly)
+
+    Operations:
+    - Train the model using the given generators, evaluate its performance and save relevant information (checkpoint)
+
+    Returns:
+    - score: The evaluation loss on the test set.
+    - acc: The evaluation accuracy on the test set.
+    '''
+
+    # Number of steps in each epoch
+    steps_per_epoch = len(train_pred) // b_size
+
+    # Generate a learning rate schedule
+    lr_schedule = tf.keras.optimizers.schedules.InverseTimeDecay(0.0001, decay_steps=steps_per_epoch*50, decay_rate=1.0, staircase=False)
+    opt = Adam()
+
+    # Configure the model for training
+    model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['acc'], run_eagerly=deb)
+
+    training_generator = Data_Generator(train_pred, train_target, b_size)
+    validation_generator = Data_Generator(val_pred, val_target, b_size)
+
+    # Define checkpoint
+    if moment == 'Start':
+        checkpoint = ModelCheckpoint(output_directory + '/' + name + checkpoint_name, monitor='val_loss', verbose=1, save_best_only=True, mode='auto', save_freq='epoch')
+        callbacks_list = [checkpoint]
+
+    elif moment == 'Transfer':
+        print(output_directory + '/' + name + checkpoint_name)
+        checkpoint = ModelCheckpoint(output_directory + '/' + name + checkpoint_name, monitor='val_loss', verbose = 1, save_weights_only = True, mode ='auto', save_freq='epoch')
+        callback =  tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=6)
+        callbacks_list = [callback]
+    
+    elif moment == 'Restart':
+        checkpoint = ModelCheckpoint(output_directory + '/' + name + checkpoint_name, monitor='val_loss', verbose = 1, save_weights_only = True, mode ='auto')
+        callbacks_list = [checkpoint]
+
+    # Train the model
+    validation_steps = len(val_pred) // b_size
+    history = model.fit(training_generator, steps_per_epoch=steps_per_epoch, epochs=n_epochs, verbose=1, validation_data=validation_generator, validation_steps=validation_steps,
+                        shuffle=True, callbacks=callbacks_list)
+
+    # Generate the accuracy and loss plots
+    plot_acc_loss(history=history, name=name, output_dir=output_directory)
+
+    # Evaluate the model
+    score, acc = model.evaluate([test_pred, test_pred], test_target, batch_size=b_size, verbose=0)        
+
+    return score, acc
+
+
+def computing_properties_spec_set(dat, output_dir, name):
+    '''
+    Args:
+    - dat: Specific set with the compounds
+    - output_dir: Name of the output directory
+    - name: Base name of the CSV file generated
+
+    Operations:
+    - Compute the properties of the compounds of the specific set
+    - Save them in a dataframe
+
+    Returns:
+    - Dataframe containing the properties of each compound of the specific set
+    '''
+
+    data_init = []
+    print('Computing properties for specific set...')
+    
+    # Compute the properties of each compound
+    for comp in tqdm(dat.tolist()):
+        try:
+            #print('LOUS_1_1')
+            smi, sa, qed, mw, logp, tpsa, nhd, nha = compute_properties(comp)
+            #print('LOUS_1_2')
+            data_init.append([smi, sa, qed, mw, logp, tpsa, nhd, nha])
+        except:
+            pass
+    # Save the properties in a dataframe
+    df_init_props = pd.DataFrame(data_init, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA'])
+    df_init_props.to_csv(output_dir + '/' + name + '_specific_smiles.csv')
+
+    return df_init_props
+
+
+def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_init_props, mom):
+    '''
+    Args:
+    - smiles: Generated compounds + specific training set 
+    - t_smiles:
+    - output_dir: Name of the output directory
+    - name: Base name of the CSV file generated
+    - df_init_props: Properties of the specific set
+    - mom: The moment of the training (Start, Transfer, Restart)
+
+    Operations:
+    - Compute properties of the compounds of the generated compounds
+    - Generate histograms for the comparison of properties (specific vs generated)
+    - Save them in a dataframe
+
+    Return:
+    - Dataframe containing the properties of each compounds of the general set
+    '''
+
+    data = []
+    print('Computing properties...')
+
+    if mom == 'restart':
+        simles_fps = smiles
+
+    elif mom == 'initial':
+        smiles_fps = compute_tanimoto_init(smiles)
+
+    # Compute properties of the general set 
+    for comp in tqdm(t_smiles):
+        
+        smi, sa, qed, mw, logp, tpsa, nhd, nha = compute_properties(comp)
+
+        if mom == 'initial' or 'restart':
+            tan_mean, tan_max = tanimoto2(comp, smiles_fps)
+            data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha, tan_mean, tan_max])
+
+        else:
+            data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha])
+
+    
+    # Save the properties in a dataframe
+    if mom == 'initial' or 'restart':
+        df_gen_props = pd.DataFrame(data, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'tan_mean', 'tan_max'])
+        
+        # Generate histograms
+        for prop in list(df_gen_props.columns)[1:-2]:
+            histogram_properties(df_init_props, df_gen_props, prop, output_dir)
+
+    else:
+        df_gen_props = pd.DataFrame(data, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA'])
+
+
+    # Save the dataframe
+    df_gen_props.to_csv(output_dir + '/' + name + '_generated_smiles.csv')
+    print("\nSmiles written to " + output_dir + '/' + name + '_generated_smiles.csv')
+
+    return df_gen_props
+
+
+def model_vae(model, size, test_pred):
+    '''
+    Args:
+        model (tf.keras.Model): The VAE model from which components will be extracted.
+        size (int): The size of the vocabulary.
+        test_pred (numpy.ndarray): The test data used to predict the latent space representations.
+
+    Operations:
+        1. Extract the encoder part of the VAE model.
+        2. Create a model to map latent space vectors to LSTM states.
+        3. Create a decoder model for sequence generation.
+        4. Copy weights from the original VAE model to the decoder model.
+        5. Predict the latent space representation for the test data.
+        6. Randomly select a latent space vector as the seed for sequence generation.
+        7. Set a scale factor for sequence generation.
+
+    Returns:
+        gen_model (tf.keras.Model): The decoder model for sequence generation.
+        latent_to_states_model (tf.keras.Model): The model mapping latent space vectors to LSTM states.
+        latent_seed (numpy.ndarray): The seed for generating sequences.
+        scale (float): The scale factor for sequence generation.
+    '''
+
+    encoder = Model(inputs=model.layers[0].input, outputs=model.layers[3].output)
+    
+    latent_input = Input(shape=(128, ))
+    state_h = model.layers[5](latent_input)
+    state_c = model.layers[6](latent_input)
+    latent_to_states_model = Model(latent_input, [state_h, state_c])
+    print('\n')
+    latent_to_states_model.summary()
+
+    decoder_inputs = Input(batch_shape=(1, 1, size))
+    decoder_lstm = LSTM(256, return_sequences=True, stateful=True)(decoder_inputs)
+    decoder_outputs = Dense(size, activation='softmax')(decoder_lstm)
+    gen_model = Model(decoder_inputs, decoder_outputs)
+
+    for i in range(1,3):
+        gen_model.layers[i].set_weights(model.layers[i+6].get_weights())
+
+    print('\n')
+    gen_model.summary()
+
+    test_latent_space = encoder.predict(test_pred)
+
+    rand_seed = random.randint(0, test_latent_space.shape[0])
+
+    latent_seed = test_latent_space[rand_seed:rand_seed + 1]
+
+    scale = 0.5
+
+    return gen_model, latent_to_states_model, latent_seed, scale
+
+
+def main():
+    
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        try:
+            tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+            tf.config.experimental.set_memory_growth(gpus[0], True)
+        except RuntimeError as e:
+            print("Error setting GPU config:", e)
+
+    # Set all variables to the given argument values
+    smiles_file, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, transfer, \
+    alt_smiles, restart, selfies_form, active_learning, qed_t, sascore_t, tanimoto_t, protein = parseArg()        
+    
+    # Generate the output directory. Path to smiles_file + the given name 
+    output_dir = '/'.join(smiles_file.split('/')[:-1])+ '/' + name
+
+    if active_learning:
+        # Generate first output directory
+        output_dir = output_dir + '_1'
+    
+    if not os.path.exists(output_dir):
+        # Create it if it does not exist
+        os.mkdir(output_dir)
+
+    # Generate a plot with the length of the SMILES of the general training set and return 2*median of the length of the SMILES 
+    max_len = length_scanner(smiles_file, output_dir)
+    
+    # Transform each of the SMILES from the general training set into an array. The ones that have a length higher than max_len will be removed
+    data = load_data(data=smiles_file, max_len=max_len)
+    
+    # Clean SMILES from salts and charges and standardize them
+    data_final = smiles_cleaning(data=data)
+    
+    # Number of characters in SMILES (==50)
+    n_vocab = len(smiles_to_int)
+
+    # Split the general training dataset into train, test and validation one-hot-encoded
+    train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final, val_size, test_size, max_len, type_seq='SMILE')
+
+    # Define the LSTM VAE model architecture based on the input and output dimensions of the data
+    model = lstm_model(train_x, train_y)
+    model.summary()
+
+    if transfer:
+        if active_learning:
+            for round in range(1, active_learning+1):
+                
+                # Transform each of the SMILES from the specific training set into an array. The ones that have a length higher than max_len will be removed
+                data_2 = load_data(data=alt_smiles, max_len=max_len)
+                print(len(data_2))
+                print('Load_data: ', data_2)
+                
+                # Clean the SMILES from salts and charges and standardize them
+                data_final_2 = smiles_cleaning(data=data_2)
+                print('Smiles_cleaning: ', len(data_final_2))
+
+                # Compute properties of the specific training set
+                df_init_props = computing_properties_spec_set(data_final_2, output_dir, name)
+                # Split the specific training set into train, test and validation one-hot-encoded 
+                train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final_2, val_size, test_size, max_len, type_seq='SMILE')
+                n_vocab = len(smiles_to_int)
+
+                print('ROUND %s'%round)
+
+                if round == 1:
+                    print('loading weights for first round ...')
+                    weights_file = '/shared/work-external/jvilalta/multitargetGM/full/lous_generative_test_gpu_weights.hdf5'
+                    model.load_weights(weights_file)
+                else:
+                    print('loading weights for round %s...'%round)
+                    init_output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_1'
+                    print('init_output', init_output_dir)
+                    model.load_weights(init_output_dir + '/' + name + '_weights.hdf5')
+
+                # Batch size is all the specific training set
+                batch_size = len(val_x) - 2
+                num_epochs = 100
+                
+                # Train, evaluate the model and generate checkpoints using the specific training set
+                score, acc = train_and_evaluate_model(model, train_x, train_y, val_x, val_y, test_x, test_y, batch_size, num_epochs, output_dir, name, '_weights.hdf5', 'Transfer', True)
+                print('LOUS_3')
+                print(f'\nTest alternative loss: {score}')
+                print(f'Test alternative accuracy: {acc}')
+                
+                print('saving weights...')
+                init_output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_1'
+                model.save_weights(init_output_dir + '/' + name + '_weights.hdf5')
+        
+                gen_model, latent_to_states_model, latent_seed, scale = model_vae(model, len(int_to_smiles), test_x)
+
+                # Evaluate the model
+                score, acc = model.evaluate([test_x, test_x], test_y, batch_size=batch_size, verbose=0)
+                print(f'\nTest loss: {score}')
+                print(f'Test accuracy: {acc}')
+                                
+                # Generate new compounds
+                t_mols, t_smiles, not_valid = generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, protein)
+                print('GENERATED COMPOUNDS')
+                print(len(t_smiles))
+                
+                if len(t_mols)<=0:
+                    raise Exception("No valid compounds generated.")
+                
+                # Apply 1st filter: Substructural filters
+                df_t_smiles = pd.DataFrame(t_smiles, columns=['smiles'])
+                df_t_smiles = apply_structural_filters(df_t_smiles)
+                t_smiles = df_t_smiles['smiles'].tolist()
+                print('FIRST FILTER:')
+                print(len(t_smiles))
+                
+                # Compute properties of the generated compounds
+                df_gen_props = computing_properties_generated_set(alt_smiles, t_smiles, output_dir, name, df_init_props, 'initial')
+                
+                print('Output files such as weights and compounds (if any) can be found in output folder.\n')
+
+                write_report(train_size=train.shape[0], val_size=validation.shape[0], test_size=test.shape[0], test_loss=score,
+                            test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, quant=quant,
+                            not_valid=not_valid, name=name, outdir=output_dir)
+            
+                # Apply 2nd filter: Thresholds (QED, SA and Tanimoto) physicochemical properties
+                df_with_threshold = apply_thresholds(df_gen_props=df_gen_props, property_thresholds=[qed_t, sascore_t, tanimoto_t])
+                print('SECOND FILTER:')
+                print(len(df_with_threshold))
+                
+                # Apply 3rd filter: FilterCatog PAINS, Brenk, NIH, CHEMBL
+                df_filtered = apply_unwanted_substruct_filters(df_with_threshold)
+                df_filtered = df_with_threshold
+                print('THIRD FILTER:')
+                print(len(df_filtered))
+                
+                if len(df_filtered)==1:
+                    raise Exception("No valid compounds generated.")
+
+                output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round+1)
+                
+                if not os.path.exists(output_dir):
+                    os.mkdir(output_dir)
+
+                # Generate a CSV with the filtered compounds
+                df_filtered.to_csv(output_dir + '/' + name + '_generated_smiles_threshold_' + str(round) + '.csv')
+
+                # Merge the generated compounds with the compounds from the specific training set
+                df_init_props, df_filtered = filter_unique_molecules(df_init_props, df_filtered) # remove duplicates
+                df_merge_rounds = pd.concat([df_filtered['smiles'], df_init_props['smiles']]) 
+
+                # Add the correct index
+                df_merge_rounds.reset_index(inplace=True, drop=True)
+
+                # Generate a CSV that contains the generated compounds and the ones from the specific training set
+                df_merge_rounds.to_csv(output_dir + '/' + name + '_generated_smiles_merged.csv', index=False, header=None)
+
+                # Change the name of the specific training set to the new set (generated + previous specific training set)
+                alt_smiles = output_dir + '/' + name + '_generated_smiles_merged.csv'
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("Shutting down with error: ", e) 
+
