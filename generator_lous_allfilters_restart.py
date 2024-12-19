@@ -31,7 +31,7 @@ def parseArg():
 
     parser = ap.ArgumentParser()
 
-    parser.add_argument("-i", "--smiles", required=True, type=str, help="path to smiles file.")
+    parser.add_argument("-g", "--general_set_smiles", required=True, type=str, help="path to smiles file.")
     parser.add_argument("-e", "--epochs", required=True, type=int, help="number of epochs.")
     parser.add_argument("-v", "--validation_size", required=True, type=float, help="validation set size.")
     parser.add_argument("-t", "--test_size", required=True, type=float, help="test set size.")
@@ -40,19 +40,30 @@ def parseArg():
     parser.add_argument("-q", "--quantity", required=True, type=int, help="amount of molecules to be generated.")
     parser.add_argument("-n", "--name", required=False, type=str, help="name of generative run.")
     parser.add_argument("-tl", "--transfer_learning", required=False, action='store_true', help="get best weights from main model and use them on alt dataset.")
-    parser.add_argument("-pa", "--path_alternative", required=False, type=str, help="path to alternative smiles file.")
-    parser.add_argument("-r", "--restart", required=False, type=str, help="restart training from stored weights. Path to weights.")
-    parser.add_argument("-sf", "--selfies", required=False, action='store_true', help="use SELFIES as encoding protocol.")
+    parser.add_argument("-pa", "--specific_set_smiles", required=False, type=str, help="path to alternative smiles file.")
+    parser.add_argument("-pt", "--pretrained", required=False, type=str, help="restart training from stored weights. Path to weights.")
     parser.add_argument("-al", "--active_learning", required=False, type=int, help="execute the generation routine in 'al' active learning iterations.")
     parser.add_argument("-qed", "--druglikeness", required=False, type=float, help="threshold for qed value of generated molecules.")
     parser.add_argument("-sa", "--sascore", required=False, type=float, help="threshold for sascore value of generated molecules.")
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
-
+    parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
+    
     parser.add_argument("-p", "--protein", required=False, action="store_true", help="enable protein generation.")
+    parser.add_argument("-sf", "--selfies", required=False, action='store_true', help="use SELFIES as encoding protocol.")
 
     args = parser.parse_args()
+    
+    # No (de moment) because we need this set to compute properties
+    # if bool(args.general_set_smiles) == bool(args.transfer_learning):
+    #     parser.error("Specify either --general_set_smiles to run training, or --transfer_learning to load weights, but not both.")
+    
+    if args.transfer_learning and not args.pretrained:
+        parser.error("--pretrained is required when --transfer_learning is specified")
+        
+    if args.active_learning and not all([args.druglikeness, args.sascore, args.tanimoto]):
+        parser.error("--active_learning requires --druglikeness, --sascore, and --tanimoto.")
 
-    smiles = args.smiles
+    smiles = args.general_set_smiles
     num_epochs = args.epochs
     val_size = args.validation_size
     test_size = args.test_size
@@ -67,17 +78,19 @@ def parseArg():
     quantity = args.quantity
     name = args.name
     transfer = args.transfer_learning
-    alt_smiles = args.path_alternative
-    restart = args.restart
-    selfies_form = args.selfies
+    alt_smiles = args.specific_set_smiles
+    weights = args.pretrained
+    selfies_form = args.selfies # not useful
     active_learning = args.active_learning
     qed_t = args.druglikeness
     sascore_t = args.sascore
     tanimoto_t = args.tanimoto
-    protein = args.protein
+    protein = args.protein # not useful
+    restart = args.restart
 
-    return smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity, name, transfer, alt_smiles, restart, \
-    selfies_form, active_learning, qed_t, sascore_t, tanimoto_t, protein
+    return smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity,\
+    name, transfer, alt_smiles, weights, active_learning, qed_t, sascore_t, tanimoto_t, restart,\
+    selfies_form, protein
 
 
 def split_data(dat, validation_size, test_size, maximum_len, type_seq, char_alph=None):
@@ -133,7 +146,8 @@ def train_and_evaluate_model(model, train_pred, train_target, val_pred, val_targ
     - model: The model to be trained and evaluated.
     - train_pred: The input data for training.
     - train_target: The ground truth labels for training.
-    - val_pred: The input data for validation.
+    - val_pred: The input da    parser.add_argument("-pt", "--pretrained", required=False, type=str, help="restart training from stored weights. Path to weights.")
+ta for validation.
     - val_target: The ground truth labels for validation.
     - test_pred: The input data for testing.
     - test_target: The ground truth labels for testing.
@@ -216,12 +230,10 @@ def computing_properties_spec_set(dat, output_dir, name):
     # Compute the properties of each compound
     for comp in tqdm(dat.tolist()):
         try:
-            #print('LOUS_1_1')
             smi, sa, qed, mw, logp, tpsa, nhd, nha = compute_properties(comp)
-            #print('LOUS_1_2')
             data_init.append([smi, sa, qed, mw, logp, tpsa, nhd, nha])
         except:
-            pass
+            pass # if not valid compound
         
     # Save the properties in a dataframe
     df_init_props = pd.DataFrame(data_init, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA'])
@@ -354,16 +366,19 @@ def main():
             tf.config.experimental.set_memory_growth(gpus[0], True)
         except RuntimeError as e:
             print("Error setting GPU config:", e)
-
-    smiles_file, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, transfer, \
-    alt_smiles, restart, selfies_form, active_learning, qed_t, sascore_t, tanimoto_t, protein = parseArg()        
     
+    # Set all variables to the given argument values
+    smiles_file, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, transfer, \
+    alt_smiles, weights_file, active_learning, qed_t, sascore_t, tanimoto_t, restart, selfies_form, protein = parseArg()        
+    
+    # Generate the output directory. Path to smiles_file + the given name
     output_dir = '/'.join(smiles_file.split('/')[:-1])+ '/' + name
 
     if active_learning:
-        output_dir = output_dir + '_1'
-   
+        output_dir = output_dir + '_' + str(1)
+    
     if restart:
+        print('Restarting the job')
         # Define paths according to the rounds that have been done previously
         output_dir = '/'.join(smiles_file.split('/')[:-1])+ '/' + name
         rounds_done = glob.glob('%s_*'%output_dir)
@@ -377,33 +392,38 @@ def main():
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
+    # Generate a plot with the length of the SMILES of the general training set and return 2*median of the length of the SMILES
     max_len = length_scanner(smiles_file, output_dir)
     
+    # Transform each of the SMILES from the general training set into an array. The ones that have a length higher than max_len will be removed
     data = load_data(data=smiles_file, max_len=max_len)
     
+    # Clean SMILES from salts and charges and standardize them
     data_final = smiles_cleaning(data=data)
     
+    # Number of characters in SMILES (==50)
     n_vocab = len(smiles_to_int)
-
+    
+    # Split the general training dataset into train, test and validation one-hot-encoded
     train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final, val_size, test_size, max_len, type_seq='SMILE')
 
+    # Define the LSTM VAE model architecture based on the input and output dimensions of the data
     model = lstm_model(train_x, train_y)
     model.summary()
-
-    if restart:
-        model.load_weights(restart)
-        print(f'Loaded weights from {restart}')
 
     if transfer:
         if active_learning:
             for round in range(1, active_learning + 1):
-                if round <= rounds_done: continue
                 
-                # define specific set from the previous round
-                alt_smiles = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round-1) + '/' + name + '_generated_smiles_merged.csv'
-                print('Specific set: ', alt_smiles)
+                if restart:
+                    # start from the last round done
+                    if round <= rounds_done: continue
+                    
+                    # define specific set from the previous round
+                    alt_smiles = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round-1) + '/' + name + '_generated_smiles_merged.csv'
+                    print('Specific set: ', alt_smiles)
                 
-                # Compute properties of the specific training set
+                # Transform each of the SMILES from the specific training set into an array. The ones that have a length higher than max_len will be removed
                 data_2 = load_data(data=alt_smiles, max_len=max_len)
                 print(len(data_2))
                 print('Load_data: ', data_2)
@@ -412,29 +432,36 @@ def main():
                 
                 # Define current output dir
                 current_output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round)
-                print(f'\nOutput dir: {output_dir}')
-                print(f'\nCurrent output dir: {current_output_dir}')
-
+                print(f'\nOutput dir: {output_dir}') # this is the initial output dir --> I want to change it in oder to set the path that I want
+                print(f'Current output dir: {current_output_dir}')
+                print('\n')
+                
                 if not os.path.exists(current_output_dir):
                     os.mkdir(current_output_dir)
                 
+                # Compute properties of the specific training set
                 df_init_props = computing_properties_spec_set(data_final_2, current_output_dir, name)
+                # Split the specific training set into train, test and validation one-hot-encoded
                 train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final_2, val_size, test_size, max_len, type_seq='SMILE')
                 n_vocab = len(smiles_to_int)
-                print('N vocab: ', n_vocab)
                 
                 print(f'\nROUND {round}')
+                
+                # Load weights
+                if round == 1:
+                    print('loading weights for first round ...')
+                    model.load_weights(weights_file)
+                else:
+                    print('loading weights for round %s...'%round)
+                    output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_1'
+                    model.load_weights(output_dir + '/' + name + '_weights.hdf5')
 
-                if round > rounds_done:
-                    init_output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round-1)
-                    model.load_weights(init_output_dir + '/' + name + '_weights.hdf5')
-                    print(f'Loaded weights from round {round - 1}')
-                    print(f'Init output dir: {init_output_dir}')
-
+                # Batch size is all the specific training set
                 batch_size = len(val_x) - 2
                 num_epochs = 100
                 
-                score, acc = train_and_evaluate_model(model, train_x, train_y, val_x, val_y, test_x, test_y, batch_size, num_epochs, init_output_dir, name, '_weights.hdf5', 'Transfer', True)
+                # Train, evaluate the model and generate checkpoints using the specific training set
+                score, acc = train_and_evaluate_model(model, train_x, train_y, val_x, val_y, test_x, test_y, batch_size, num_epochs, output_dir, name, '_weights.hdf5', 'Transfer', True)
                 
                 print(f'\nTest alternative loss: {score}')
                 print(f'Test alternative accuracy: {acc}')
@@ -443,10 +470,12 @@ def main():
                 
                 gen_model, latent_to_states_model, latent_seed, scale = model_vae(model, len(int_to_smiles), test_x)
 
+                # Evaluate the model
                 score, acc = model.evaluate([test_x, test_x], test_y, batch_size=batch_size, verbose=0)
                 print(f'\nTest loss: {score}')
                 print(f'Test accuracy: {acc}')
-                                
+                         
+                # Generate new compounds       
                 t_mols, t_smiles, not_valid = generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, protein)
                 print('GENERATED COMPOUNDS')
                 print(len(t_smiles))
@@ -483,7 +512,7 @@ def main():
                 print(len(df_filtered))
                 
                 if len(df_filtered)==1:
-                    raise Exception("No valid compounds generated.")
+                    raise Exception("No valid compounds generated after filtering.")
                 
                 # Generate a CSV with the filtered compounds
                 df_filtered.to_csv(current_output_dir + '/' + name + '_generated_smiles_threshold_' + str(round-1) + '.csv')
@@ -495,13 +524,13 @@ def main():
                 
                 df_merge_rounds.to_csv(current_output_dir + '/' + name + '_generated_smiles_merged.csv', index=False, header=None)
                 
+                # Change the name of the specific training set to the new set (generated + previous specific training set)
                 alt_smiles = current_output_dir + '/' + name + '_generated_smiles_merged.csv'
 
 
-
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print("Shutting down with error: ", e) 
-
+    # try:
+    #     main()
+    # except Exception as e:
+    #     print("Shutting down with error: ", e) 
+    main()
