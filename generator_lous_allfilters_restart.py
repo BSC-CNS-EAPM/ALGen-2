@@ -43,22 +43,20 @@ def parseArg():
     parser.add_argument("-tl", "--transfer_learning", required=False, action='store_true', help="get best weights from main model and use them on alt dataset.")
     parser.add_argument("-pa", "--specific_set_smiles", required=False, type=str, help="path to alternative smiles file.")
     parser.add_argument("-pt", "--pretrained", required=False, type=str, help="restart training from stored weights. Path to weights.")
-    parser.add_argument("-al", "--active_learning", required=False, type=int, help="execute the generation routine in 'al' active learning iterations.")
+    parser.add_argument("-ial", "--inner_al", required=False, type=int, help="number of 'al' active learning iterations.")
     parser.add_argument("-qed", "--druglikeness", required=False, type=float, help="threshold for qed value of generated molecules.")
     parser.add_argument("-sa", "--sascore", required=False, type=float, help="threshold for sascore value of generated molecules.")
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
     parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
     
-    parser.add_argument("-p", "--protein", required=False, action="store_true", help="enable protein generation.")          # not useful
-    parser.add_argument("-sf", "--selfies", required=False, action='store_true', help="use SELFIES as encoding protocol.")  # not useful
 
     args = parser.parse_args()
     
     if args.transfer_learning and not args.pretrained:
         parser.error("--pretrained is required when --transfer_learning is specified")
         
-    if args.active_learning and not all([args.druglikeness, args.sascore, args.tanimoto]):
-        parser.error("--active_learning requires --druglikeness, --sascore, and --tanimoto.")
+    if args.inner_al and not all([args.druglikeness, args.sascore, args.tanimoto]):
+        parser.error("--inner_al requires --druglikeness, --sascore, and --tanimoto.")
 
     smiles = args.general_set_smiles
     num_epochs = args.epochs
@@ -78,27 +76,24 @@ def parseArg():
     transfer = args.transfer_learning
     alt_smiles = args.specific_set_smiles
     weights = args.pretrained
-    selfies_form = args.selfies
-    active_learning = args.active_learning
+    active_learning = args.inner_al
     qed_t = args.druglikeness
     sascore_t = args.sascore
     tanimoto_t = args.tanimoto
-    protein = args.protein
     restart = args.restart
 
     return smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity,\
     name, outdir, transfer, alt_smiles, weights, active_learning, qed_t, sascore_t, tanimoto_t,\
-    restart, selfies_form, protein
+    restart
 
 
-def split_data(dat, validation_size, test_size, maximum_len, type_seq, char_alph=None):
+def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
     '''
     Args:
     - dat: The input data to be split
     - validation_size: The proportion of the data to be used for validation
     - test_size: The proportion of the data to be used for testing
     - maximum_len: Max length
-    - type_seq: Type of sequence we are using
     - char_alph: List of the unique characters found in a SELFIE
 
     Operations:
@@ -120,20 +115,9 @@ def split_data(dat, validation_size, test_size, maximum_len, type_seq, char_alph
     print("Number of possible characters: ", len(int_to_smiles))
 
     # One-hot-encoding. The resulting object is a 3D Tensor (Number of SMILES x Length of SMILES x Number of characters in a SMILE)
-    if type_seq == 'Protein':
-        train_pred, train_target = protein_one_hot_encoder(sequences=train, max_len=maximum_len, num_char=len(amino_to_int))
-        val_pred, val_target = protein_one_hot_encoder(sequences=validation,  max_len=maximum_len, num_char=len(amino_to_int))
-        test_pred, test_target = protein_one_hot_encoder(sequences=test,  max_len=maximum_len, num_char=len(amino_to_int))
-
-    elif type_seq == 'SELFIE':
-        train_pred, _, train_target = selfies_one_hot_encoder(train, char_alph)
-        val_pred, _, val_target = selfies_one_hot_encoder(validation, char_alph)
-        test_pred, _, test_target = selfies_one_hot_encoder(test, char_alph)
-
-    elif type_seq == 'SMILE':
-        train_pred, train_target = one_hot_encoder(smiles=train, max_len=maximum_len, num_char=len(smiles_to_int))
-        val_pred, val_target = one_hot_encoder(smiles=validation,  max_len=maximum_len, num_char=len(smiles_to_int))
-        test_pred, test_target = one_hot_encoder(smiles=test,  max_len=maximum_len, num_char=len(smiles_to_int))
+    train_pred, train_target = one_hot_encoder(smiles=train, max_len=maximum_len, num_char=len(smiles_to_int))
+    val_pred, val_target = one_hot_encoder(smiles=validation,  max_len=maximum_len, num_char=len(smiles_to_int))
+    test_pred, test_target = one_hot_encoder(smiles=test,  max_len=maximum_len, num_char=len(smiles_to_int))
 
     return train, validation, test, train_pred, train_target, val_pred, val_target, test_pred, test_target
 
@@ -367,7 +351,7 @@ def main():
     
     # Set all variables to the given argument values
     smiles_file, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir, transfer, \
-    alt_smiles, weights_file, active_learning, qed_t, sascore_t, tanimoto_t, restart, selfies_form, protein = parseArg()        
+    alt_smiles, weights_file, active_learning, qed_t, sascore_t, tanimoto_t, restart = parseArg()        
     
     # Generate the output directory
     if outdir:
@@ -406,7 +390,7 @@ def main():
     n_vocab = len(smiles_to_int)
     
     # Split the general training dataset into train, test and validation one-hot-encoded
-    train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final, val_size, test_size, max_len, type_seq='SMILE')
+    train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final, val_size, test_size, max_len)
 
     # Define the LSTM VAE model architecture based on the input and output dimensions of the data
     model = lstm_model(train_x, train_y)
@@ -443,7 +427,7 @@ def main():
                 # Compute properties of the specific training set
                 df_init_props = computing_properties_spec_set(data_final_2, current_output_dir, name)
                 # Split the specific training set into train, test and validation one-hot-encoded
-                train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final_2, val_size, test_size, max_len, type_seq='SMILE')
+                train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final_2, val_size, test_size, max_len)
                 n_vocab = len(smiles_to_int)
                 
                 print(f'\nROUND {round}')
@@ -477,7 +461,7 @@ def main():
                 print(f'Test accuracy: {acc}')
                          
                 # Generate new compounds       
-                t_mols, t_smiles, not_valid = generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, protein)
+                t_mols, t_smiles, not_valid = generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant)
                 print('GENERATED COMPOUNDS')
                 print(len(t_smiles))
                 
