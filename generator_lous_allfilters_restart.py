@@ -39,6 +39,7 @@ def parseArg():
     parser.add_argument("-s", "--sampling_temperature", required=True, type=float, help="sampling temperature.")
     parser.add_argument("-q", "--quantity", required=True, type=int, help="amount of molecules to be generated.")
     parser.add_argument("-n", "--name", required=False, type=str, help="name of generative run.")
+    parser.add_argument("-o", "--outdir", required=False, type=str, help="output directory.")
     parser.add_argument("-tl", "--transfer_learning", required=False, action='store_true', help="get best weights from main model and use them on alt dataset.")
     parser.add_argument("-pa", "--specific_set_smiles", required=False, type=str, help="path to alternative smiles file.")
     parser.add_argument("-pt", "--pretrained", required=False, type=str, help="restart training from stored weights. Path to weights.")
@@ -48,14 +49,10 @@ def parseArg():
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
     parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
     
-    parser.add_argument("-p", "--protein", required=False, action="store_true", help="enable protein generation.")
-    parser.add_argument("-sf", "--selfies", required=False, action='store_true', help="use SELFIES as encoding protocol.")
+    parser.add_argument("-p", "--protein", required=False, action="store_true", help="enable protein generation.")          # not useful
+    parser.add_argument("-sf", "--selfies", required=False, action='store_true', help="use SELFIES as encoding protocol.")  # not useful
 
     args = parser.parse_args()
-    
-    # No (de moment) because we need this set to compute properties
-    # if bool(args.general_set_smiles) == bool(args.transfer_learning):
-    #     parser.error("Specify either --general_set_smiles to run training, or --transfer_learning to load weights, but not both.")
     
     if args.transfer_learning and not args.pretrained:
         parser.error("--pretrained is required when --transfer_learning is specified")
@@ -77,20 +74,21 @@ def parseArg():
 
     quantity = args.quantity
     name = args.name
+    outdir = args.outdir
     transfer = args.transfer_learning
     alt_smiles = args.specific_set_smiles
     weights = args.pretrained
-    selfies_form = args.selfies # not useful
+    selfies_form = args.selfies
     active_learning = args.active_learning
     qed_t = args.druglikeness
     sascore_t = args.sascore
     tanimoto_t = args.tanimoto
-    protein = args.protein # not useful
+    protein = args.protein
     restart = args.restart
 
     return smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity,\
-    name, transfer, alt_smiles, weights, active_learning, qed_t, sascore_t, tanimoto_t, restart,\
-    selfies_form, protein
+    name, outdir, transfer, alt_smiles, weights, active_learning, qed_t, sascore_t, tanimoto_t,\
+    restart, selfies_form, protein
 
 
 def split_data(dat, validation_size, test_size, maximum_len, type_seq, char_alph=None):
@@ -368,11 +366,14 @@ def main():
             print("Error setting GPU config:", e)
     
     # Set all variables to the given argument values
-    smiles_file, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, transfer, \
+    smiles_file, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir, transfer, \
     alt_smiles, weights_file, active_learning, qed_t, sascore_t, tanimoto_t, restart, selfies_form, protein = parseArg()        
     
-    # Generate the output directory. Path to smiles_file + the given name
-    output_dir = '/'.join(smiles_file.split('/')[:-1])+ '/' + name
+    # Generate the output directory
+    if outdir:
+        output_dir = outdir + '/' + name
+    else: # The output dir is the path to smiles_file + the given name
+        output_dir = '/'.join(smiles_file.split('/')[:-1])+ '/' + name
 
     if active_learning:
         output_dir = output_dir + '_' + str(1)
