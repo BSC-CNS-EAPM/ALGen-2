@@ -31,19 +31,18 @@ def parseArg():
 
     parser = ap.ArgumentParser()
 
-    parser.add_argument("-g", "--general_set_smiles", required=True, type=str, help="path to smiles file.")
+    parser.add_argument("-g", "--general_set_smiles", required=False, type=str, help="path to smiles file.")
     parser.add_argument("-e", "--epochs", required=True, type=int, help="number of epochs.")
     parser.add_argument("-v", "--validation_size", required=True, type=float, help="validation set size.")
     parser.add_argument("-t", "--test_size", required=True, type=float, help="test set size.")
     parser.add_argument("-b", "--batch_size", required=True, type=int, help="batch size.")
     parser.add_argument("-s", "--sampling_temperature", required=True, type=float, help="sampling temperature.")
     parser.add_argument("-q", "--quantity", required=True, type=int, help="amount of molecules to be generated.")
-    parser.add_argument("-n", "--name", required=False, type=str, help="name of generative run.")
+    parser.add_argument("-n", "--name", required=True, type=str, help="name of generative run.")
     parser.add_argument("-o", "--outdir", required=False, type=str, help="output directory.")
-    parser.add_argument("-tl", "--transfer_learning", required=False, action='store_true', help="get best weights from main model and use them on alt dataset.")
     parser.add_argument("-pa", "--specific_set_smiles", required=False, type=str, help="path to alternative smiles file.")
     parser.add_argument("-pt", "--pretrained", required=False, type=str, help="restart training from stored weights. Path to weights.")
-    parser.add_argument("-ial", "--inner_al", required=False, type=int, help="number of 'al' active learning iterations.")
+    parser.add_argument("-ial", "--inner_al", required=True, type=int, help="number of 'al' active learning iterations.")
     parser.add_argument("-qed", "--druglikeness", required=False, type=float, help="threshold for qed value of generated molecules.")
     parser.add_argument("-sa", "--sascore", required=False, type=float, help="threshold for sascore value of generated molecules.")
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
@@ -52,9 +51,9 @@ def parseArg():
 
     args = parser.parse_args()
     
-    if args.transfer_learning and not args.pretrained:
-        parser.error("--pretrained is required when --transfer_learning is specified")
-        
+    if bool(args.general_set_smiles) == bool(args.pretrained):
+         parser.error("Specify either --general_set_smiles to run training, or --pretrained to load weights, but not both.")
+    
     if args.inner_al and not all([args.druglikeness, args.sascore, args.tanimoto]):
         parser.error("--inner_al requires --druglikeness, --sascore, and --tanimoto.")
 
@@ -73,7 +72,6 @@ def parseArg():
     quantity = args.quantity
     name = args.name
     outdir = args.outdir
-    transfer = args.transfer_learning
     alt_smiles = args.specific_set_smiles
     weights = args.pretrained
     active_learning = args.inner_al
@@ -83,8 +81,7 @@ def parseArg():
     restart = args.restart
 
     return smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity,\
-    name, outdir, transfer, alt_smiles, weights, active_learning, qed_t, sascore_t, tanimoto_t,\
-    restart
+    name, outdir, alt_smiles, weights, active_learning, qed_t, sascore_t, tanimoto_t, restart
 
 
 def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
@@ -350,7 +347,7 @@ def main():
             print("Error setting GPU config:", e)
     
     # Set all variables to the given argument values
-    smiles_file, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir, transfer, \
+    smiles_file, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir,\
     alt_smiles, weights_file, active_learning, qed_t, sascore_t, tanimoto_t, restart = parseArg()        
     
     # Generate the output directory
@@ -396,121 +393,124 @@ def main():
     model = lstm_model(train_x, train_y)
     model.summary()
 
-    if transfer:
-        if active_learning:
-            for round in range(1, active_learning + 1):
-                
-                if restart:
-                    # start from the last round done
-                    if round <= rounds_done: continue
-                    
-                    # define specific set from the previous round
-                    alt_smiles = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round-1) + '/' + name + '_generated_smiles_merged.csv'
-                    print('Specific set: ', alt_smiles)
-                
-                # Transform each of the SMILES from the specific training set into an array. The ones that have a length higher than max_len will be removed
-                data_2 = load_data(data=alt_smiles, max_len=max_len)
-                print(len(data_2))
-                print('Load_data: ', data_2)
-                data_final_2 = smiles_cleaning(data=data_2)
-                print('Smiles_cleaning: ', len(data_final_2))
-                
-                # Define current output dir
-                current_output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round)
-                print(f'\nOutput dir: {output_dir}') # this is the initial output dir --> I want to change it in oder to set the path that I want
-                print(f'Current output dir: {current_output_dir}')
-                print('\n')
-                
-                if not os.path.exists(current_output_dir):
-                    os.mkdir(current_output_dir)
-                
-                # Compute properties of the specific training set
-                df_init_props = computing_properties_spec_set(data_final_2, current_output_dir, name)
-                # Split the specific training set into train, test and validation one-hot-encoded
-                train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final_2, val_size, test_size, max_len)
-                n_vocab = len(smiles_to_int)
-                
-                print(f'\nROUND {round}')
-                
-                # Load weights
-                if round == 1:
-                    print('loading weights for first round ...')
-                    model.load_weights(weights_file)
-                else:
-                    print('loading weights for round %s...'%round)
-                    output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_1'
-                    model.load_weights(output_dir + '/' + name + '_weights.hdf5')
-
-                # Batch size is all the specific training set
-                batch_size = len(val_x) - 2
-                num_epochs = 100
-                
-                # Train, evaluate the model and generate checkpoints using the specific training set
-                score, acc = train_and_evaluate_model(model, train_x, train_y, val_x, val_y, test_x, test_y, batch_size, num_epochs, output_dir, name, '_weights.hdf5', 'Transfer', True)
-                
-                print(f'\nTest alternative loss: {score}')
-                print(f'Test alternative accuracy: {acc}')
-                
-                model.save_weights(current_output_dir + '/' + name + '_weights.hdf5')
-                
-                gen_model, latent_to_states_model, latent_seed, scale = model_vae(model, len(int_to_smiles), test_x)
-
-                # Evaluate the model
-                score, acc = model.evaluate([test_x, test_x], test_y, batch_size=batch_size, verbose=0)
-                print(f'\nTest loss: {score}')
-                print(f'Test accuracy: {acc}')
-                         
-                # Generate new compounds       
-                t_mols, t_smiles, not_valid = generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant)
-                print('GENERATED COMPOUNDS')
-                print(len(t_smiles))
-                
-                if len(t_mols)<=0:
-                    raise Exception("No valid compounds generated.")
-                
-                # Apply 1st filter: Substructural filters
-                df_t_smiles = pd.DataFrame(t_smiles, columns=['smiles'])
-                df_t_smiles = apply_structural_filters(df_t_smiles)
-                t_smiles = df_t_smiles['smiles'].tolist()
-                print('FIRST FILTER:')
-                print(len(t_smiles))
-                
-                # Compute properties of the generated compounds
-                df_gen_props = computing_properties_generated_set(alt_smiles, t_smiles, current_output_dir, name, df_init_props, 'initial')
-
-                print('Output files such as weights and compounds (if any) can be found in output folder.\n')
-
-                write_report(train_size=train.shape[0], val_size=validation.shape[0], test_size=test.shape[0], test_loss=score,
-                            test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, quant=quant,
-                            not_valid=not_valid, name=name, outdir=current_output_dir)
+    # For each inner cycle of active learning:
+    for round in range(1, active_learning + 1):
+        
+        if restart:
+            # start from the last round done
+            if round <= rounds_done: continue
             
-                # Apply 2nd filter: Thresholds (QED, SA and Tanimoto) physicochemical properties
-                df_with_threshold = apply_thresholds(df_gen_props=df_gen_props, property_thresholds=[qed_t, sascore_t, tanimoto_t])
-                print('SECOND FILTER:')
-                print(len(df_with_threshold))
-                
-                # Apply 3rd filter: FilterCatog PAINS, Brenk, NIH, CHEMBL
-                df_filtered = apply_unwanted_substruct_filters(df_with_threshold)
-                
-                df_filtered = df_with_threshold
-                print('THIRD FILTER:')
-                print(len(df_filtered))
-                
-                if len(df_filtered)==1:
-                    raise Exception("No valid compounds generated after filtering.")
-                
-                # Generate a CSV with the filtered compounds
-                df_filtered.to_csv(current_output_dir + '/' + name + '_generated_smiles_threshold_' + str(round-1) + '.csv')
-                
-                # Merge the generated compounds with the compounds from the specific training set
-                df_init_props, df_filtered = filter_unique_molecules(df_init_props, df_filtered) # remove duplicates
-                df_merge_rounds = pd.concat([df_filtered['smiles'], df_init_props['smiles']])
-                df_merge_rounds.reset_index(inplace=True, drop=True)
-                
-                df_merge_rounds.to_csv(current_output_dir + '/' + name + '_generated_smiles_merged.csv', index=False, header=None)
-                
-                # Change the name of the specific training set to the new set (generated + previous specific training set)
-                alt_smiles = current_output_dir + '/' + name + '_generated_smiles_merged.csv'
+            # define specific set from the previous round
+            alt_smiles = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round-1) + '/' + name + '_generated_smiles_merged.csv'
+            print('Specific set: ', alt_smiles)
+        
+        # Transform each of the SMILES from the specific training set into an array. The ones that have a length higher than max_len will be removed
+        data_2 = load_data(data=alt_smiles, max_len=max_len)
+        print(len(data_2))
+        print('Load_data: ', data_2)
+        data_final_2 = smiles_cleaning(data=data_2)
+        print('Smiles_cleaning: ', len(data_final_2))
+        
+        # Define current output dir
+        current_output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round)
+        print(f'\nOutput dir: {output_dir}')
+        print(f'Current output dir: {current_output_dir}')
+        print('\n')
+        
+        if not os.path.exists(current_output_dir):
+            os.mkdir(current_output_dir)
+        
+        # Compute properties of the specific training set
+        df_init_props = computing_properties_spec_set(data_final_2, current_output_dir, name)
+        # Split the specific training set into train, test and validation one-hot-encoded
+        train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final_2, val_size, test_size, max_len)
+        n_vocab = len(smiles_to_int)
+        
+        print(f'\nROUND {round}')
+        
+        # Load weights
+        if weights_file:
+            if round == 1:
+                print('loading weights for first round ...')
+                model.load_weights(weights_file)
+            else:
+                print('loading weights for round %s...'%round)
+                output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_1' # TODO: CHECK IF LOADING ALWAYS THE 1st IS CORRECT
+                model.load_weights(output_dir + '/' + name + '_weights.hdf5')
+        else:
+            pass
+            # TODO: IF NOT PRETRAINED WEIGHTS, RUN TRAINING OF GENERAL SET
+        
+        # Batch size is all the specific training set
+        batch_size = len(val_x) - 2
+        num_epochs = 100
+        
+        # Train, evaluate the model and generate checkpoints using the specific training set
+        score, acc = train_and_evaluate_model(model, train_x, train_y, val_x, val_y, test_x, test_y, batch_size, num_epochs, output_dir, name, '_weights.hdf5', 'Transfer', True)
+        
+        print(f'\nTest alternative loss: {score}')
+        print(f'Test alternative accuracy: {acc}')
+        
+        model.save_weights(current_output_dir + '/' + name + '_weights.hdf5')
+        
+        gen_model, latent_to_states_model, latent_seed, scale = model_vae(model, len(int_to_smiles), test_x)
+
+        # Evaluate the model
+        score, acc = model.evaluate([test_x, test_x], test_y, batch_size=batch_size, verbose=0)
+        print(f'\nTest loss: {score}')
+        print(f'Test accuracy: {acc}')
+                    
+        # Generate new compounds       
+        t_mols, t_smiles, not_valid = generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant)
+        print('GENERATED COMPOUNDS')
+        print(len(t_smiles))
+        
+        if len(t_mols)<=0:
+            raise Exception("No valid compounds generated.")
+        
+        # Apply 1st filter: Substructural filters
+        df_t_smiles = pd.DataFrame(t_smiles, columns=['smiles'])
+        df_t_smiles = apply_structural_filters(df_t_smiles)
+        t_smiles = df_t_smiles['smiles'].tolist()
+        print('FIRST FILTER:')
+        print(len(t_smiles))
+        
+        # Compute properties of the generated compounds
+        df_gen_props = computing_properties_generated_set(alt_smiles, t_smiles, current_output_dir, name, df_init_props, 'initial')
+
+        print('Output files such as weights and compounds (if any) can be found in output folder.\n')
+
+        write_report(train_size=train.shape[0], val_size=validation.shape[0], test_size=test.shape[0], test_loss=score,
+                    test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, quant=quant,
+                    not_valid=not_valid, name=name, outdir=current_output_dir)
+    
+        # Apply 2nd filter: Thresholds (QED, SA and Tanimoto) physicochemical properties
+        df_with_threshold = apply_thresholds(df_gen_props=df_gen_props, property_thresholds=[qed_t, sascore_t, tanimoto_t])
+        print('SECOND FILTER:')
+        print(len(df_with_threshold))
+        
+        # Apply 3rd filter: FilterCatog PAINS, Brenk, NIH, CHEMBL
+        df_filtered = apply_unwanted_substruct_filters(df_with_threshold)
+        
+        df_filtered = df_with_threshold
+        print('THIRD FILTER:')
+        print(len(df_filtered))
+        
+        if len(df_filtered)==1:
+            raise Exception("No valid compounds generated after filtering.")
+        
+        # Generate a CSV with the filtered compounds
+        df_filtered.to_csv(current_output_dir + '/' + name + '_generated_smiles_threshold_' + str(round-1) + '.csv')
+        
+        # Merge the generated compounds with the compounds from the specific training set
+        df_init_props, df_filtered = filter_unique_molecules(df_init_props, df_filtered) # remove duplicates
+        df_merge_rounds = pd.concat([df_filtered['smiles'], df_init_props['smiles']])
+        df_merge_rounds.reset_index(inplace=True, drop=True)
+        
+        df_merge_rounds.to_csv(current_output_dir + '/' + name + '_generated_smiles_merged.csv', index=False, header=None)
+        
+        # Change the name of the specific training set to the new set (generated + previous specific training set)
+        alt_smiles = current_output_dir + '/' + name + '_generated_smiles_merged.csv'
 
 
 if __name__ == "__main__":
