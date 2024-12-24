@@ -31,7 +31,7 @@ def parseArg():
 
     parser = ap.ArgumentParser()
 
-    parser.add_argument("-g", "--general_set_smiles", required=False, type=str, help="path to smiles file.")
+    parser.add_argument("-g", "--general_set_smiles", required=True, type=str, help="path to smiles file.")
     parser.add_argument("-e", "--epochs", required=True, type=int, help="number of epochs.")
     parser.add_argument("-v", "--validation_size", required=True, type=float, help="validation set size.")
     parser.add_argument("-t", "--test_size", required=True, type=float, help="test set size.")
@@ -48,11 +48,7 @@ def parseArg():
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
     parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
     
-
     args = parser.parse_args()
-    
-    if bool(args.general_set_smiles) == bool(args.pretrained):
-         parser.error("Specify either --general_set_smiles to run training, or --pretrained to load weights, but not both.")
     
     if args.inner_al and not all([args.druglikeness, args.sascore, args.tanimoto]):
         parser.error("--inner_al requires --druglikeness, --sascore, and --tanimoto.")
@@ -352,6 +348,8 @@ def main():
     
     # Generate the output directory
     if outdir:
+        if not os.path.exists(outdir):
+            os.mkdir(outdir)
         output_dir = outdir + '/' + name
     else: # The output dir is the path to smiles_file + the given name
         output_dir = '/'.join(smiles_file.split('/')[:-1])+ '/' + name
@@ -374,27 +372,35 @@ def main():
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
+    
     # Generate a plot with the length of the SMILES of the general training set and return 2*median of the length of the SMILES
     max_len = length_scanner(smiles_file, output_dir)
-    
+
     # Transform each of the SMILES from the general training set into an array. The ones that have a length higher than max_len will be removed
     data = load_data(data=smiles_file, max_len=max_len)
-    
+
     # Clean SMILES from salts and charges and standardize them
     data_final = smiles_cleaning(data=data)
-    
+
     # Number of characters in SMILES (==50)
     n_vocab = len(smiles_to_int)
-    
+
     # Split the general training dataset into train, test and validation one-hot-encoded
     train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final, val_size, test_size, max_len)
 
     # Define the LSTM VAE model architecture based on the input and output dimensions of the data
     model = lstm_model(train_x, train_y)
     model.summary()
+    
+    # if general set is provided:
+    if smiles_file:
+        pass
+        # TODO: IF NOT PRETRAINED WEIGHTS AND GENERAL SET SMILES, RUN TRAINING OF GENERAL SET
 
     # For each inner cycle of active learning:
     for round in range(1, active_learning + 1):
+        
+        # TODO: What happens if no specific set (alt_smiles) is provided? It should continue generating but not targeted. Implement!!
         
         if restart:
             # start from the last round done
@@ -429,17 +435,13 @@ def main():
         print(f'\nROUND {round}')
         
         # Load weights
-        if weights_file:
-            if round == 1:
-                print('loading weights for first round ...')
-                model.load_weights(weights_file)
-            else:
-                print('loading weights for round %s...'%round)
-                output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_1' # TODO: CHECK IF LOADING ALWAYS THE 1st IS CORRECT
-                model.load_weights(output_dir + '/' + name + '_weights.hdf5')
+        if round == 1:
+            print('loading weights for first round ...')
+            model.load_weights(weights_file)
         else:
-            pass
-            # TODO: IF NOT PRETRAINED WEIGHTS, RUN TRAINING OF GENERAL SET
+            print('loading weights for round %s...'%round)
+            output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_1' # TODO: CHECK IF LOADING ALWAYS THE 1st IS CORRECT
+            model.load_weights(output_dir + '/' + name + '_weights.hdf5')
         
         # Batch size is all the specific training set
         batch_size = len(val_x) - 2
