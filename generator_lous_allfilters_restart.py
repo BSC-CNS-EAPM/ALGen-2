@@ -356,23 +356,24 @@ def main():
 
     if active_learning:
         output_dir = output_dir + '_' + str(1)
-    
+
     if restart:
         print('Restarting the job')
         # Define paths according to the rounds that have been done previously
-        output_dir = '/'.join(smiles_file.split('/')[:-1])+ '/' + name
+        output_dir = '_'.join(output_dir.split('_')[:-1])
         rounds_done = glob.glob('%s_*'%output_dir)
         rounds_done = [x for x in rounds_done if '.err' not in x]
         rounds_done = [x for x in rounds_done if '.out' not in x]
         print(rounds_done)
         rounds_done = len(rounds_done) - 1
         output_dir = output_dir + '_' + str(rounds_done)
+        if not os.path.isfile(output_dir + '/' + name + '_generated_smiles.csv'):
+            rounds_done = rounds_done - 1
         print(f'\nRounds done: {rounds_done}\n')
-
+        
     if not os.path.exists(output_dir):
         os.mkdir(output_dir)
 
-    
     # Generate a plot with the length of the SMILES of the general training set and return 2*median of the length of the SMILES
     max_len = length_scanner(smiles_file, output_dir)
 
@@ -407,9 +408,9 @@ def main():
             if round <= rounds_done: continue
             
             # define specific set from the previous round
-            alt_smiles = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round-1) + '/' + name + '_generated_smiles_merged.csv'
+            alt_smiles = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round) + '/' + name + '_generated_smiles_merged.csv'
             print('Specific set: ', alt_smiles)
-        
+                
         # Transform each of the SMILES from the specific training set into an array. The ones that have a length higher than max_len will be removed
         data_2 = load_data(data=alt_smiles, max_len=max_len)
         print(len(data_2))
@@ -496,12 +497,10 @@ def main():
         
         # Apply 3rd filter: FilterCatog PAINS, Brenk, NIH, CHEMBL
         df_filtered = apply_unwanted_substruct_filters(df_with_threshold)
-        
-        df_filtered = df_with_threshold
         print('THIRD FILTER:')
         print(len(df_filtered))
         
-        if len(df_filtered)==1:
+        if len(df_filtered)<=1:
             raise Exception("No valid compounds generated after filtering.")
         
         if not os.path.exists(next_output_dir):
