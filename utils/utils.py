@@ -102,19 +102,16 @@ def compute_tanimoto_init(specific_set):
 def tanimoto2(compound, specific_set_fps):
     '''
     '''
-    print(compound, specific_set_fps)
     comp_mol = Chem.MolFromSmiles(compound)
 
     comp_fps = Chem.RDKFingerprint(comp_mol) 
     #fpgen = rdFingerprintGenerator.GetMorganGenerator(radius=4)
     #comp_fps = fpgen.GetSparseCountFingerprint(comp_mol)
-    print(comp_fps)
     sims = []
 
     for fp in specific_set_fps:
         sims.append(DataStructs.FingerprintSimilarity(fp,comp_fps))
     #sims.append(DataStructs.BulkTanimotoSimilarity(comp_fps, specific_set_fps))
-    print(sims)
     return np.mean(sims), np.max(sims)
 
 def compute_properties(smi):

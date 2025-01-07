@@ -89,7 +89,7 @@ def sample_sequences(gen_model, latent_to_states_model, latent, n_vocab, samplin
             break
     return sequence
 
-def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, protein):
+def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, protein=None):
 
     samples, mols = [], []
     not_valid = 0
