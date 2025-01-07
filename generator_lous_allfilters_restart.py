@@ -417,17 +417,20 @@ def main():
         data_final_2 = smiles_cleaning(data=data_2)
         print('Smiles_cleaning: ', len(data_final_2))
         
-        # Define current output dir
+        # Define output dirs
         current_output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round)
+        next_output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round+1)
         print(f'\nOutput dir: {output_dir}')
-        print(f'Current output dir: {current_output_dir}')
+        print(f'Current output dir: {current_output_dir}')        
+        print(f'Next output dir: {next_output_dir}')
         print('\n')
         
         if not os.path.exists(current_output_dir):
             os.mkdir(current_output_dir)
         
         # Compute properties of the specific training set
-        df_init_props = computing_properties_spec_set(data_final_2, current_output_dir, name)
+        df_init_props = computing_properties_spec_set(data_final_2, output_dir, name)
+        
         # Split the specific training set into train, test and validation one-hot-encoded
         train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final_2, val_size, test_size, max_len)
         n_vocab = len(smiles_to_int)
@@ -501,18 +504,21 @@ def main():
         if len(df_filtered)==1:
             raise Exception("No valid compounds generated after filtering.")
         
+        if not os.path.exists(next_output_dir):
+            os.mkdir(next_output_dir)
+            
         # Generate a CSV with the filtered compounds
-        df_filtered.to_csv(current_output_dir + '/' + name + '_generated_smiles_threshold_' + str(round-1) + '.csv')
+        df_filtered.to_csv(next_output_dir + '/' + name + '_generated_smiles_threshold_' + str(round) + '.csv')
         
         # Merge the generated compounds with the compounds from the specific training set
         df_init_props, df_filtered = filter_unique_molecules(df_init_props, df_filtered) # remove duplicates
         df_merge_rounds = pd.concat([df_filtered['smiles'], df_init_props['smiles']])
         df_merge_rounds.reset_index(inplace=True, drop=True)
         
-        df_merge_rounds.to_csv(current_output_dir + '/' + name + '_generated_smiles_merged.csv', index=False, header=None)
+        df_merge_rounds.to_csv(next_output_dir + '/' + name + '_generated_smiles_merged.csv', index=False, header=None)
         
         # Change the name of the specific training set to the new set (generated + previous specific training set)
-        alt_smiles = current_output_dir + '/' + name + '_generated_smiles_merged.csv'
+        alt_smiles = next_output_dir + '/' + name + '_generated_smiles_merged.csv'
 
 
 if __name__ == "__main__":
