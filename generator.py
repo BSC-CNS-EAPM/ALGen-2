@@ -36,13 +36,13 @@ def parseArg():
     parser.add_argument("-v", "--validation_size", required=True, type=float, help="validation set size.")
     parser.add_argument("-t", "--test_size", required=True, type=float, help="test set size.")
     parser.add_argument("-b", "--batch_size", required=True, type=int, help="batch size.")
-    parser.add_argument("-s", "--sampling_temperature", required=True, type=float, help="sampling temperature.")
+    parser.add_argument("-s", "--sampling_temperature", required=False, type=float, help="sampling temperature.")
     parser.add_argument("-q", "--quantity", required=True, type=int, help="amount of molecules to be generated.")
     parser.add_argument("-n", "--name", required=True, type=str, help="name of generative run.")
     parser.add_argument("-o", "--outdir", required=False, type=str, help="output directory.")
     parser.add_argument("-pa", "--specific_set_smiles", required=False, type=str, help="path to alternative smiles file.")
     parser.add_argument("-pt", "--pretrained", required=False, type=str, help="restart training from stored weights. Path to weights.")
-    parser.add_argument("-ial", "--inner_al", required=True, type=int, help="number of 'al' active learning iterations.")
+    parser.add_argument("-ial", "--inner_al", required=False, type=int, help="number of 'al' active learning iterations.")
     parser.add_argument("-qed", "--druglikeness", required=False, type=float, help="threshold for qed value of generated molecules.")
     parser.add_argument("-sa", "--sascore", required=False, type=float, help="threshold for sascore value of generated molecules.")
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
@@ -50,37 +50,44 @@ def parseArg():
     
     args = parser.parse_args()
     
+    # If inner active learning, thresholds for druglikeness, sascore, and tanimoto are required
     if args.inner_al and not all([args.druglikeness, args.sascore, args.tanimoto]):
         parser.error("--inner_al requires --druglikeness, --sascore, and --tanimoto.")
         
-    if args.restart and not args.pretrained:
-        parser.error("--restart requires previous --pretrained weights to save time")
+    # Choose or restart or pretrained, but not both
+    if args.restart and args.pretrained:
+        parser.error("--restart and --pretrained can't run simultaneously.")
 
-    smiles = args.general_set_smiles
+    # Define variables
+    general_smiles = args.general_set_smiles
     num_epochs = args.epochs
     val_size = args.validation_size
     test_size = args.test_size
     batch_size = args.batch_size
-
+    quantity = args.quantity
+    name = args.name
+    outdir = args.outdir
+    specific_smiles = args.specific_set_smiles
+    weights = args.pretrained
+    qed_t = args.druglikeness
+    sascore_t = args.sascore
+    tanimoto_t = args.tanimoto
+    restart = args.restart
+    
+    # Define default variables for not required arguments
     if args.sampling_temperature:
         sampling_temperature = args.sampling_temperature
     else:
         # If we do not provide a sampling temperature, generate a random one from 0.1 to 1.5
         sampling_temperature = random.uniform(0.1, 1.5)
+        
+    if args.inner_al:
+        inner_al = args.inner_al
+    else:
+        inner_al = 1
 
-    quantity = args.quantity
-    name = args.name
-    outdir = args.outdir
-    alt_smiles = args.specific_set_smiles
-    weights = args.pretrained
-    active_learning = args.inner_al
-    qed_t = args.druglikeness
-    sascore_t = args.sascore
-    tanimoto_t = args.tanimoto
-    restart = args.restart
-
-    return smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity,\
-    name, outdir, alt_smiles, weights, active_learning, qed_t, sascore_t, tanimoto_t, restart
+    return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity,\
+    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, restart
 
 
 def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
