@@ -39,7 +39,7 @@ def parseArg():
     parser.add_argument("-s", "--sampling_temperature", required=False, type=float, help="sampling temperature.")
     parser.add_argument("-q", "--quantity", required=True, type=int, help="amount of molecules to be generated.")
     parser.add_argument("-n", "--name", required=True, type=str, help="name of generative run.")
-    parser.add_argument("-o", "--outdir", required=False, type=str, help="output directory.")
+    parser.add_argument("-o", "--outdir", required=True, type=str, help="output directory.")
     parser.add_argument("-pa", "--specific_set_smiles", required=False, type=str, help="path to alternative smiles file.")
     parser.add_argument("-pt", "--pretrained", required=False, type=str, help="restart training from stored weights. Path to weights.")
     parser.add_argument("-ial", "--inner_al", required=False, type=int, help="number of 'al' active learning iterations.")
@@ -97,7 +97,7 @@ def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
     - validation_size: The proportion of the data to be used for validation
     - test_size: The proportion of the data to be used for testing
     - maximum_len: Max length
-    - char_alph: List of the unique characters found in a SELFIE
+    - char_alph: List of the unique characters found in a SMILE.
 
     Operations:
     - Split the dataset into training, validation and test sets.
@@ -352,52 +352,41 @@ def main():
             print("Error setting GPU config:", e)
     
     # Set all variables to the given argument values
-    smiles_file, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir,\
-    alt_smiles, weights_file, active_learning, qed_t, sascore_t, tanimoto_t, restart = parseArg()        
+    general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir,\
+    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, restart = parseArg()        
     
     # Generate the output directory
-    if outdir:
-        if not os.path.exists(outdir):
-            os.mkdir(outdir)
-        output_dir = outdir + '/' + name
-    else: # The output dir is the path to smiles_file + the given name
-        output_dir = '/'.join(smiles_file.split('/')[:-1])+ '/' + name
-
-    if active_learning:
-        output_dir = output_dir + '_' + str(1)
+    if not os.path.exists(outdir):
+        os.mkdir(outdir)
+    inner_output_dir = outdir + '/' + name
 
     if restart:
         print('Restarting the job')
         # Define paths according to the rounds that have been done previously
-        output_dir = '_'.join(output_dir.split('_')[:-1])
-        rounds_done = glob.glob('%s_*'%output_dir)
-        rounds_done = [x for x in rounds_done if '.err' not in x]
-        rounds_done = [x for x in rounds_done if '.out' not in x]
-        print(rounds_done)
-        rounds_done = len(rounds_done) - 1
-        output_dir = output_dir + '_' + str(rounds_done)
-        if not os.path.isfile(output_dir + '/' + name + '_generated_smiles.csv'):
-            rounds_done = rounds_done - 1
-        print(f'\nRounds done: {rounds_done}\n')
-        
-    if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
+        round = glob.glob('%s_*'%inner_output_dir)
+        round = [os.path.isdir(x) for x in round]
+        round = len(round)
+        print(f'\nRounds done: {round-1}\n')
+    else:
+        round = 1
+        if not os.path.exists(inner_output_dir + '_' + str(round)):
+            os.mkdir(inner_output_dir + '_' + str(round))
 
     # Generate a plot with the length of the SMILES of the general training set and return 2*median of the length of the SMILES
-    max_len = length_scanner(smiles_file, output_dir)
+    max_len = length_scanner(general_smiles)
 
     # Transform each of the SMILES from the general training set into an array. The ones that have a length higher than max_len will be removed
-    data = load_data(data=smiles_file, max_len=max_len)
+    data_general = load_data(data=general_smiles, max_len=max_len)
 
     # Clean SMILES from salts and charges and standardize them
-    data_final = smiles_cleaning(data=data)
+    data_general = smiles_cleaning(data=data_general)
 
     # Number of characters in SMILES (==50)
     n_vocab = len(smiles_to_int)
 
     # Split the general training dataset into train, test and validation one-hot-encoded
-    train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final, val_size, test_size, max_len)
-
+    train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_general, val_size, test_size, max_len)
+    
     # Define the LSTM VAE model architecture based on the input and output dimensions of the data
     model = lstm_model(train_x, train_y)
     model.summary()
@@ -405,9 +394,7 @@ def main():
     # If pretrained weights file is provided, load these weights. If not, run the
     # training of the general training set and then load the resulting weights.
     if not weights_file:        
-        batch_size = len(val_x) - 2
-        num_epochs = 100
-        training_dir = '/'.join(output_dir.split('/')[:-1])+ '/pretrained'
+        training_dir = outdir + '/pretrained'
         if not os.path.exists(training_dir):
             os.mkdir(training_dir)
             
@@ -415,43 +402,29 @@ def main():
         weights_file = training_dir + '/general_weights.hdf5'
         
     # For each inner cycle of active learning:
-    for round in range(1, active_learning + 1):
+    for i in range(round, inner_al + 1):
         
-        # TODO: What happens if no specific set (alt_smiles) is provided? It should continue generating but not targeted. Implement!!
+        # TODO: What happens if no specific set (specific_smiles) is provided? It should continue generating but not targeted. Implement!!
         
         if restart:
-            # start from the last round done
-            if round <= rounds_done: continue
-            
             # define specific set from the previous round
-            alt_smiles = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round) + '/' + name + '_generated_smiles_merged.csv'
-            print('Specific set: ', alt_smiles)
+            specific_smiles = inner_output_dir + '_' + str(i) + '/' + name + '_generated_smiles_merged.csv'
+            print('Specific set: ', specific_smiles)
                 
         # Transform each of the SMILES from the specific training set into an array. The ones that have a length higher than max_len will be removed
-        data_2 = load_data(data=alt_smiles, max_len=max_len)
-        print('Load_data: ', data_2)
-        data_final_2 = smiles_cleaning(data=data_2)
-        print('Smiles_cleaning: ', len(data_final_2))
-        
-        # Define output dirs
-        current_output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round)
-        next_output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_' + str(round+1)
-        print(f'\nOutput dir: {output_dir}')
-        print(f'Current output dir: {current_output_dir}')        
-        print(f'Next output dir: {next_output_dir}')
-        print('\n')
-        
-        if not os.path.exists(current_output_dir):
-            os.mkdir(current_output_dir)
+        data_specific = load_data(data=specific_smiles, max_len=max_len)
+        print('Load_data: ', data_specific)
+        data_specific = smiles_cleaning(data=data_specific)
+        print('Smiles_cleaning: ', len(data_specific))
         
         # Compute properties of the specific training set
-        df_init_props = computing_properties_spec_set(data_final_2, output_dir, name)
+        df_init_props = computing_properties_spec_set(data_specific, inner_output_dir+'_'+str(i), name)
         
         # Split the specific training set into train, test and validation one-hot-encoded
-        train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_final_2, val_size, test_size, max_len)
+        train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_specific, val_size, test_size, max_len)
         n_vocab = len(smiles_to_int)
         
-        print(f'\nROUND {round}')
+        print(f'\nROUND {i}')
         
         # Load weights
         if round == 1:
@@ -459,20 +432,19 @@ def main():
             model.load_weights(weights_file)
         else:
             print('loading weights for round %s...'%round)
-            output_dir = '/'.join(output_dir.split('/')[:-1]) + '/' + name + '_1' # TODO: CHECK IF LOADING ALWAYS THE 1st IS CORRECT
-            model.load_weights(output_dir + '/' + name + '_weights.hdf5')
+            model.load_weights(inner_output_dir + '_1' + '/' + name + '_weights.hdf5')
         
         # Batch size is all the specific training set
-        batch_size = len(val_x) - 2
-        num_epochs = 100
+        batch_size = len(val_x) - 2    # Specific batch size not given by parser!
+        num_epochs = 100               # Specific num epochs not given by parser!
         
         # Train, evaluate the model and generate checkpoints using the specific training set
-        score, acc = train_and_evaluate_model(model, train_x, train_y, val_x, val_y, test_x, test_y, batch_size, num_epochs, output_dir, name, '_weights.hdf5', 'Transfer', True)
+        score, acc = train_and_evaluate_model(model, train_x, train_y, val_x, val_y, test_x, test_y, batch_size, num_epochs, inner_output_dir+'_'+str(i), name, '_weights.hdf5', 'Transfer', True)
         
         print(f'\nTest alternative loss: {score}')
         print(f'Test alternative accuracy: {acc}')
         
-        model.save_weights(current_output_dir + '/' + name + '_weights.hdf5')
+        model.save_weights(inner_output_dir+'_'+str(i) + '/' + name + '_weights.hdf5')
         
         gen_model, latent_to_states_model, latent_seed, scale = model_vae(model, len(int_to_smiles), test_x)
 
@@ -497,18 +469,19 @@ def main():
         print(len(t_smiles))
         
         # Compute properties of the generated compounds
-        df_gen_props = computing_properties_generated_set(alt_smiles, t_smiles, current_output_dir, name, df_init_props, 'initial')
-
-        print('Output files such as weights and compounds (if any) can be found in output folder.\n')
+        df_gen_props = computing_properties_generated_set(specific_smiles, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial')
 
         write_report(train_size=train.shape[0], val_size=validation.shape[0], test_size=test.shape[0], test_loss=score,
                     test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, quant=quant,
-                    not_valid=not_valid, name=name, outdir=current_output_dir)
+                    not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i))
     
         # Apply 2nd filter: Thresholds (QED, SA and Tanimoto) physicochemical properties
         df_with_threshold = apply_thresholds(df_gen_props=df_gen_props, property_thresholds=[qed_t, sascore_t, tanimoto_t])
         print('SECOND FILTER:')
         print(len(df_with_threshold))
+        
+        if len(df_with_threshold)<=1:
+            raise Exception("No valid compounds generated after filtering.")
         
         # Apply 3rd filter: FilterCatog PAINS, Brenk, NIH, CHEMBL
         df_filtered = apply_unwanted_substruct_filters(df_with_threshold)
@@ -518,21 +491,21 @@ def main():
         if len(df_filtered)<=1:
             raise Exception("No valid compounds generated after filtering.")
         
-        if not os.path.exists(next_output_dir):
-            os.mkdir(next_output_dir)
+        if not os.path.exists(inner_output_dir + '_' + str(i+1)):
+            os.mkdir(inner_output_dir + '_' + str(i+1))
             
         # Generate a CSV with the filtered compounds
-        df_filtered.to_csv(next_output_dir + '/' + name + '_generated_smiles_threshold_' + str(round) + '.csv')
+        df_filtered.to_csv(inner_output_dir + '_' + str(i+1) + '/' + name + '_generated_smiles_threshold_' + str(i) + '.csv')
         
         # Merge the generated compounds with the compounds from the specific training set
         df_init_props, df_filtered = filter_unique_molecules(df_init_props, df_filtered) # remove duplicates
         df_merge_rounds = pd.concat([df_filtered['smiles'], df_init_props['smiles']])
         df_merge_rounds.reset_index(inplace=True, drop=True)
         
-        df_merge_rounds.to_csv(next_output_dir + '/' + name + '_generated_smiles_merged.csv', index=False, header=None)
+        df_merge_rounds.to_csv(inner_output_dir + '_' + str(i+1) + '/' + name + '_generated_smiles_merged.csv', index=False, header=None)
         
         # Change the name of the specific training set to the new set (generated + previous specific training set)
-        alt_smiles = next_output_dir + '/' + name + '_generated_smiles_merged.csv'
+        specific_smiles = inner_output_dir + '_' + str(i+1) + '/' + name + '_generated_smiles_merged.csv'
 
 
 if __name__ == "__main__":

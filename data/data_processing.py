@@ -5,7 +5,6 @@ import matplotlib.pyplot as plt
 from rdkit.Chem.SaltRemover import SaltRemover
 from rdkit.Chem.MolStandardize.rdMolStandardize import Cleanup
 import rdkit.Chem as Chem
-from chembl_structure_pipeline import standardizer
 
 global smiles_to_int
 
@@ -33,7 +32,7 @@ int_to_amino = {'0': 'C', '1': 'D', '2': 'S', '3': 'Q', '4': 'K', '5': 'I', '6':
  '11': 'H', '12': 'L', '13': 'R', '14': 'W', '15': 'A', '16': 'V', '17': 'E', '18': 'Y', '19': 'M', '20': 'U', '21': 'X', '22': '!'}
 
 
-def length_scanner(file, out_file):
+def length_scanner(file):
     '''
     Scan smiles file and compute mean and median compund length.
     '''
@@ -41,9 +40,6 @@ def length_scanner(file, out_file):
     with open(file) as f:
         for line in f:
             lengths.append(len(line))
-
-    plt.plot(range(len(lengths)), lengths)
-    plt.savefig("{}/smiles_length.png".format(out_file), format='png')
 
     num_char = 2 * np.median(lengths)
 
@@ -76,7 +72,6 @@ def smiles_cleaning(data):
             m = Chem.MolFromSmiles(smiles)
             a = remover.StripMol(m, dontRemoveEverything=True)
             e = Cleanup(a)
-            #s = standardizer.standardize_mol(e) # Finally NO
             clean_smiles.append(Chem.MolToSmiles(e))
         except:
             pass
