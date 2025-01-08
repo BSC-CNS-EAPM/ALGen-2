@@ -52,6 +52,9 @@ def parseArg():
     
     if args.inner_al and not all([args.druglikeness, args.sascore, args.tanimoto]):
         parser.error("--inner_al requires --druglikeness, --sascore, and --tanimoto.")
+        
+    if args.restart and not args.pretrained:
+        parser.error("--restart requires previous --pretrained weights to save time")
 
     smiles = args.general_set_smiles
     num_epochs = args.epochs
@@ -121,8 +124,7 @@ def train_and_evaluate_model(model, train_pred, train_target, val_pred, val_targ
     - model: The model to be trained and evaluated.
     - train_pred: The input data for training.
     - train_target: The ground truth labels for training.
-    - val_pred: The input da    parser.add_argument("-pt", "--pretrained", required=False, type=str, help="restart training from stored weights. Path to weights.")
-ta for validation.
+    - val_pred: The input data for validation.
     - val_target: The ground truth labels for validation.
     - test_pred: The input data for testing.
     - test_target: The ground truth labels for testing.
@@ -393,11 +395,18 @@ def main():
     model = lstm_model(train_x, train_y)
     model.summary()
     
-    # if general set is provided:
-    if smiles_file:
-        pass
-        # TODO: IF NOT PRETRAINED WEIGHTS AND GENERAL SET SMILES, RUN TRAINING OF GENERAL SET
-
+    # If pretrained weights file is provided, load these weights. If not, run the
+    # training of the general training set and then load the resulting weights.
+    if not weights_file:        
+        batch_size = len(val_x) - 2
+        num_epochs = 100
+        training_dir = '/'.join(output_dir.split('/')[:-1])+ '/pretrained'
+        if not os.path.exists(training_dir):
+            os.mkdir(training_dir)
+            
+        train_and_evaluate_model(model, train_x, train_y, val_x, val_y, test_x, test_y, batch_size, num_epochs, training_dir, 'general', '_weights.hdf5', 'Start', True)
+        weights_file = training_dir + '/general_weights.hdf5'
+        
     # For each inner cycle of active learning:
     for round in range(1, active_learning + 1):
         
@@ -413,7 +422,6 @@ def main():
                 
         # Transform each of the SMILES from the specific training set into an array. The ones that have a length higher than max_len will be removed
         data_2 = load_data(data=alt_smiles, max_len=max_len)
-        print(len(data_2))
         print('Load_data: ', data_2)
         data_final_2 = smiles_cleaning(data=data_2)
         print('Smiles_cleaning: ', len(data_final_2))
