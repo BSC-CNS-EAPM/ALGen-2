@@ -159,7 +159,7 @@ def train_and_evaluate_model(model, train_pred, train_target, val_pred, val_targ
     opt = Adam()
 
     # Configure the model for training
-    model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['acc'], run_eagerly=deb)
+    model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['acc'], run_eagerly=False)
 
     training_generator = Data_Generator(train_pred, train_target, b_size)
     validation_generator = Data_Generator(val_pred, val_target, b_size)
@@ -351,6 +351,8 @@ def main():
         except RuntimeError as e:
             print("Error setting GPU config:", e)
     
+    tf.debugging.set_log_device_placement(True)
+
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir,\
     specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, restart = parseArg()        
@@ -393,7 +395,7 @@ def main():
     
     # If pretrained weights file is provided, load these weights. If not, run the
     # training of the general training set and then load the resulting weights.
-    if not weights_file:        
+    if not weights_file or restart:        
         training_dir = outdir + '/pretrained'
         if not os.path.exists(training_dir):
             os.mkdir(training_dir)
@@ -468,6 +470,9 @@ def main():
         print('FIRST FILTER:')
         print(len(t_smiles))
         
+        if len(t_smiles)==0:
+            raise Exception("No valid compounds generated after the first filter.")
+        
         # Compute properties of the generated compounds
         df_gen_props = computing_properties_generated_set(specific_smiles, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial')
 
@@ -481,7 +486,7 @@ def main():
         print(len(df_with_threshold))
         
         if len(df_with_threshold)<=1:
-            raise Exception("No valid compounds generated after filtering.")
+            raise Exception("No valid compounds generated after the second filter.")
         
         # Apply 3rd filter: FilterCatog PAINS, Brenk, NIH, CHEMBL
         df_filtered = apply_unwanted_substruct_filters(df_with_threshold)
@@ -489,7 +494,7 @@ def main():
         print(len(df_filtered))
         
         if len(df_filtered)<=1:
-            raise Exception("No valid compounds generated after filtering.")
+            raise Exception("No valid compounds generated after the last filter.")
         
         if not os.path.exists(inner_output_dir + '_' + str(i+1)):
             os.mkdir(inner_output_dir + '_' + str(i+1))
