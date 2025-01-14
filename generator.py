@@ -393,7 +393,8 @@ def main():
     
     # If pretrained weights file is provided, load these weights. If not, run the
     # training of the general training set and then load the resulting weights.
-    if not weights_file or restart:        
+    if not weights_file and not restart:
+        print('Training of the general set...')        
         training_dir = outdir + '/pretrained'
         if not os.path.exists(training_dir):
             os.mkdir(training_dir)
