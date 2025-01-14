@@ -1,5 +1,8 @@
+import tensorflow as tf
 from tensorflow.keras.models import Model
 from tensorflow.keras.layers import Input, LSTM, Dense, Dropout, Concatenate
+from tensorflow.keras.backend import clear_session
+import gc
 
 from rdkit import Chem
 
@@ -91,27 +94,34 @@ def sample_sequences(gen_model, latent_to_states_model, latent, n_vocab, samplin
 
 def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, protein=None):
 
-    samples, mols = [], []
-    not_valid = 0
+    with tf.device('/GPU'):
+        samples, mols = [], []
+        not_valid = 0
 
-    for i in range(quant):
-        print("Iteration: ", i)
-        latent_vec = latent_seed + scale*(np.random.randn(latent_seed.shape[1]))
-        out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
-        
-        if not protein:
-          mol = Chem.MolFromSmiles(out)
+        for i in range(quant):
+            print("Iteration: ", i)
+            latent_vec = latent_seed + scale*(np.random.randn(latent_seed.shape[1]))
+            out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
+            print(out)
+            
+            if not protein:
+              mol = Chem.MolFromSmiles(out)
 
-          if mol:
-            mols.append(mol)
-            samples.append(out)
-          else:
-            not_valid += 1
+              if mol:
+                mols.append(mol)
+                samples.append(out)
+              else:
+                not_valid += 1
+              
+            else:
+              out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
+              samples.append(out)
+
+        # clear the memory every 100 iterations
+        if i % 100 == 0:
+          clear_session()
+          gc.collect()
           
-        else:
-          out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
-          samples.append(out)
-
-    print("\nTried to generate {} compounds and {} were not valid.".format(quant, not_valid))
+        print("\nTried to generate {} compounds and {} were not valid.".format(quant, not_valid))
 
     return mols, samples, not_valid

@@ -351,8 +351,6 @@ def main():
         except RuntimeError as e:
             print("Error setting GPU config:", e)
     
-    tf.debugging.set_log_device_placement(True)
-
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir,\
     specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, restart = parseArg()        
