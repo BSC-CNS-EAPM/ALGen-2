@@ -35,8 +35,11 @@ def calculateScore(m):
 
   # fragment score
   #fp = rdMolDescriptors.GetMorganFingerprint(m, 2)  # <- 2 is the *radius* of the circular fingerprint
+  #fps = fp.GetNonzeroElements()
   fp = rdFingerprintGenerator.GetMorganGenerator(radius=2)
-  fps = fp.GetNonzeroElements()
+  fps = fp.GetSparseCountFingerprint(m)
+  fps = fps.GetNonzeroElements()
+  
   score1 = 0.
   nf = 0
   for bitId, v in fps.items():
