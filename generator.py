@@ -10,7 +10,7 @@ from sklearn.model_selection import train_test_split
 from data.data_processing import length_scanner, load_data, one_hot_encoder, \
     Data_Generator, int_to_smiles, seq_cleaning, smiles_to_int, smiles_cleaning, \
     amino_to_int, protein_one_hot_encoder
-from models.generative_models import lstm_model, generate
+from models.generative_models import lstm_model, generate, generate_batch
 from utils.utils import apply_thresholds, selfies_one_hot_encoder, \
     smiles2selfies, write_report, plot_acc_loss, compute_properties, histogram_properties, tanimoto2, \
     compute_tanimoto_init, filter_unique_molecules, apply_structural_filters, apply_unwanted_substruct_filters
@@ -23,6 +23,7 @@ import glob
 from tqdm import tqdm
 
 import os
+import time
 
 def parseArg():
     '''
@@ -46,6 +47,7 @@ def parseArg():
     parser.add_argument("-qed", "--druglikeness", required=False, type=float, help="threshold for qed value of generated molecules.")
     parser.add_argument("-sa", "--sascore", required=False, type=float, help="threshold for sascore value of generated molecules.")
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
+    parser.add_argument("-tad", "--ta_direction", required=False, type=str, help="direction of the tanimoto threshold filter. Options: <, >")
     parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
     
     args = parser.parse_args()
@@ -57,6 +59,10 @@ def parseArg():
     # Choose or restart or pretrained, but not both
     if args.restart and args.pretrained:
         parser.error("--restart and --pretrained can't run simultaneously.")
+        
+    # If tanimoto, choose direction of the filter
+    if args.tanimoto and not args.ta_direction:
+        parser.error("--tanimoto requires --ta_direction to indicate the direction of the tanimoto filter.")
 
     # Define variables
     general_smiles = args.general_set_smiles
@@ -72,6 +78,7 @@ def parseArg():
     qed_t = args.druglikeness
     sascore_t = args.sascore
     tanimoto_t = args.tanimoto
+    ta_direction = args.ta_direction
     restart = args.restart
     
     # Define default variables for not required arguments
@@ -87,7 +94,7 @@ def parseArg():
         inner_al = 1
 
     return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity,\
-    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, restart
+    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, restart
 
 
 def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
@@ -222,11 +229,11 @@ def computing_properties_spec_set(dat, output_dir, name):
     # Save the properties in a dataframe
     df_init_props = pd.DataFrame(data_init, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA'])
     df_init_props.to_csv(output_dir + '/' + name + '_specific_smiles.csv')
-
+    
     return df_init_props
 
 
-def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_init_props, mom):
+def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_init_props, mom, ta_direction):
     '''
     Args:
     - smiles: Generated compounds + specific training set 
@@ -235,6 +242,7 @@ def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_in
     - name: Base name of the CSV file generated
     - df_init_props: Properties of the specific set
     - mom: The moment of the training (Start, Transfer, Restart)
+    - ta_direction: The direction of the tanimoto threshold filter.
 
     Operations:
     - Compute properties of the compounds of the generated compounds
@@ -260,8 +268,15 @@ def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_in
             smi, sa, qed, mw, logp, tpsa, nhd, nha = compute_properties(comp)
 
             if mom == 'initial' or 'restart':
-                tan_mean, tan_max = tanimoto2(comp, smiles_fps)
-                data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha, tan_mean, tan_max])
+                if ta_direction == '<':
+                    tan_mean, tan_max = tanimoto2(comp, smiles_fps, ta_direction)
+                    sims = []
+                    data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha, tan_mean, tan_max, sims])
+                elif ta_direction == '>':
+                    tan_mean, tan_max, sims = tanimoto2(comp, smiles_fps, ta_direction)
+                    data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha, tan_mean, tan_max, sims])
+                else:
+                    raise ValueError('Indicate the ta_direction: < or >')
 
             else:
                 data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha])
@@ -271,10 +286,10 @@ def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_in
     
     # Save the properties in a dataframe
     if mom == 'initial' or 'restart':
-        df_gen_props = pd.DataFrame(data, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'tan_mean', 'tan_max'])
+        df_gen_props = pd.DataFrame(data, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'tan_mean', 'tan_max', 'sims'])
         
         # Generate histograms
-        for prop in list(df_gen_props.columns)[1:-2]:
+        for prop in list(df_gen_props.columns)[1:-3]:
             histogram_properties(df_init_props, df_gen_props, prop, output_dir)
 
     else:
@@ -282,11 +297,11 @@ def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_in
 
 
     # Save the dataframe
-    df_gen_props.to_csv(output_dir + '/' + name + '_generated_smiles.csv')
+    df_gen_props_simple = df_gen_props[['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'tan_mean', 'tan_max']]
+    df_gen_props_simple.to_csv(output_dir + '/' + name + '_generated_smiles.csv')
     print("\nSmiles written to " + output_dir + '/' + name + '_generated_smiles.csv')
 
     return df_gen_props
-
 
 def model_vae(model, size, test_pred):
     '''
@@ -343,6 +358,8 @@ def model_vae(model, size, test_pred):
 
 def main():
     
+    time0 = time.time()
+    
     gpus = tf.config.experimental.list_physical_devices('GPU')
     if gpus:
         try:
@@ -353,7 +370,7 @@ def main():
     
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir,\
-    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, restart = parseArg()        
+    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, restart = parseArg()        
     
     # Generate the output directory
     if not os.path.exists(outdir):
@@ -454,10 +471,15 @@ def main():
         print(f'\nTest loss: {score}')
         print(f'Test accuracy: {acc}')
                     
-        # Generate new compounds       
+        # Generate new compounds
         t_mols, t_smiles, not_valid = generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant)
+        
+        #t_mols, t_smiles, not_valid = generate_batch(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, batch_size=100)
         print('GENERATED COMPOUNDS')
         print(len(t_smiles))
+        
+        timeg = time.time() - time0
+        print('Time generation: ', timeg)
         
         if len(t_mols)<=0:
             raise Exception("No valid compounds generated.")
@@ -473,18 +495,18 @@ def main():
             raise Exception("No valid compounds generated after the first filter.")
         
         # Compute properties of the generated compounds
-        df_gen_props = computing_properties_generated_set(specific_smiles, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial')
+        df_gen_props = computing_properties_generated_set(specific_smiles, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction)
 
         write_report(train_size=train.shape[0], val_size=validation.shape[0], test_size=test.shape[0], test_loss=score,
                     test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, quant=quant,
                     not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i))
     
         # Apply 2nd filter: Thresholds (QED, SA and Tanimoto) physicochemical properties
-        df_with_threshold = apply_thresholds(df_gen_props=df_gen_props, property_thresholds=[qed_t, sascore_t, tanimoto_t])
+        df_with_threshold = apply_thresholds(df_gen_props=df_gen_props, property_thresholds=[qed_t, sascore_t, tanimoto_t], ta_direction=ta_direction)
         print('SECOND FILTER:')
         print(len(df_with_threshold))
         
-        if len(df_with_threshold)<=1:
+        if len(df_with_threshold)==0:
             raise Exception("No valid compounds generated after the second filter.")
         
         # Apply 3rd filter: FilterCatog PAINS, Brenk, NIH, CHEMBL
@@ -492,7 +514,7 @@ def main():
         print('THIRD FILTER:')
         print(len(df_filtered))
         
-        if len(df_filtered)<=1:
+        if len(df_filtered)==0:
             raise Exception("No valid compounds generated after the last filter.")
         
         if not os.path.exists(inner_output_dir + '_' + str(i+1)):
@@ -510,6 +532,9 @@ def main():
         
         # Change the name of the specific training set to the new set (generated + previous specific training set)
         specific_smiles = inner_output_dir + '_' + str(i+1) + '/' + name + '_generated_smiles_merged.csv'
+        
+        timeal = time.time() - time0
+        print('Time Active Learning: ', timeal)
 
 
 if __name__ == "__main__":

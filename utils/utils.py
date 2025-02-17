@@ -99,7 +99,7 @@ def compute_tanimoto_init(specific_set):
     return fps
 
 
-def tanimoto2(compound, specific_set_fps):
+def tanimoto2(compound, specific_set_fps, ta_direction):
     '''
     '''
     comp_mol = Chem.MolFromSmiles(compound)
@@ -107,10 +107,14 @@ def tanimoto2(compound, specific_set_fps):
     fpgen = rdFingerprintGenerator.GetMorganGenerator(radius=4)
     comp_fps = fpgen.GetSparseCountFingerprint(comp_mol)
 
-    sims = []
-    sims.append(DataStructs.BulkTanimotoSimilarity(comp_fps, specific_set_fps))
+    sims = DataStructs.BulkTanimotoSimilarity(comp_fps, specific_set_fps)
     
-    return np.mean(sims), np.max(sims)
+    if ta_direction == '<':
+        return np.mean(sims), np.max(sims)
+    elif ta_direction == '>':
+        return np.mean(sims), np.max(sims), sims
+    else:
+        raise ValueError('Indicate the ta_direction: < or >')
 
 def compute_properties(smi):
     '''
@@ -128,12 +132,19 @@ def compute_properties(smi):
 
     return smi, sa, qed, mw, logp, tpsa, nhd, nha
 
-def apply_thresholds(df_gen_props, property_thresholds):
-
+def apply_thresholds(df_gen_props, property_thresholds, ta_direction):
+    df_gen_props.to_csv('test.csv')
     df_gen_props_t = df_gen_props[df_gen_props['QED'] >= property_thresholds[0]]
     df_gen_props_t = df_gen_props_t[df_gen_props_t['SAscore'] <= property_thresholds[1]]
-    df_gen_props_t = df_gen_props_t[df_gen_props_t['tan_max'] <= property_thresholds[2]]
-
+    if ta_direction == '<':
+        df_gen_props_t = df_gen_props_t[df_gen_props_t['tan_max'] <= property_thresholds[2]]
+    elif ta_direction == '>':
+        # if ta threshold value (or higher) is inside the sims list, keep the molecule
+        df_gen_props_t = df_gen_props_t[df_gen_props_t['sims'].apply(lambda x: any(i >= property_thresholds[2] for i in x))]
+    else:
+        raise ValueError('Indicate the ta_direction: < or >')
+    
+    df_gen_props_t = df_gen_props_t[['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'tan_mean', 'tan_max']]
     return df_gen_props_t
 
 def histogram_properties(df_initial, df_generated, property, out_dir):
