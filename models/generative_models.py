@@ -44,7 +44,7 @@ def lstm_model(X, y):
 
 def sample_smiles(gen_model, latent_to_states_model, latent, n_vocab, sampling_temp):
 
-    states = latent_to_states_model.predict(latent)
+    states = latent_to_states_model.predict(latent.reshape(1, -1))
     gen_model.layers[1].reset_states(states=[states[0], states[1]])
 
     startidx = smiles_to_int["!"]
@@ -94,34 +94,76 @@ def sample_sequences(gen_model, latent_to_states_model, latent, n_vocab, samplin
 
 def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, protein=None):
 
-    with tf.device('/GPU'):
-        samples, mols = [], []
-        not_valid = 0
+    samples, mols = [], []
+    not_valid = 0
 
-        for i in range(quant):
-            print("Iteration: ", i)
-            latent_vec = latent_seed + scale*(np.random.randn(latent_seed.shape[1]))
-            out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
-            print(out)
-            
-            if not protein:
-              mol = Chem.MolFromSmiles(out)
+    for i in range(quant):
+        print("Iteration: ", i)
+        latent_vec = latent_seed + scale*(np.random.randn(latent_seed.shape[1]))
+        out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
+        print(out)
+        
+        if not protein:
+          mol = Chem.MolFromSmiles(out)
 
-              if mol:
-                mols.append(mol)
-                samples.append(out)
-              else:
-                not_valid += 1
-              
-            else:
-              out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
-              samples.append(out)
+          if mol:
+            mols.append(mol)
+            samples.append(out)
+          else:
+            not_valid += 1
+          
+        else:
+          out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
+          samples.append(out)
 
         # clear the memory every 100 iterations
         if i % 100 == 0:
           clear_session()
           gc.collect()
-          
-        print("\nTried to generate {} compounds and {} were not valid.".format(quant, not_valid))
+      
+    print("\nTried to generate {} compounds and {} were not valid.".format(quant, not_valid))
 
+    return mols, samples, not_valid
+  
+def generate_batch(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, batch_size=128, protein=None):
+    samples, mols = [], []
+    not_valid = 0
+    total_generated = 0  # Tracks total molecules generated so far (valid + invalid)
+
+    while total_generated < quant:  # Continue until exactly `quant` molecules are generated
+        print(f"Generating batch to reach {quant} total molecules (current: {total_generated})")
+        
+        # Adjust batch size to not overshoot the required number of molecules
+        current_batch_size = min(batch_size, quant - total_generated)
+        latent_vecs = latent_seed + scale * np.random.randn(current_batch_size, latent_seed.shape[1])
+
+        # Predict states in batch
+        states = latent_to_states_model.predict(latent_vecs)
+        print(f"Generated latent states for batch of size: {current_batch_size}")
+
+        # Generate SMILES or sequences for the current batch
+        for latent_vec, state in zip(latent_vecs, states):
+            if protein:
+                out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
+                samples.append(out)
+            else:
+                out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
+                print(f"Generated SMILES: {out}")
+                mol = Chem.MolFromSmiles(out)
+                if mol:
+                    print(f"Appending valid SMILES: {out}")
+                    mols.append(mol)
+                    samples.append(out)
+                else:
+                    print(f"Invalid SMILES: {out}")
+                    not_valid += 1
+                    
+            total_generated += 1  # Increment total generated counter
+
+        # Clear the memory after each batch
+        clear_session()
+        tf.keras.backend.clear_session()
+        gc.collect()
+    
+    print(f"\nTried to generate {quant} compounds. Generated {total_generated} molecules ({len(mols)} valid, {not_valid} invalid).")
     return mols, samples, not_valid
