@@ -390,6 +390,7 @@ def main():
     print('  - SAscore threshold:', sascore_t)
     print('  - Tanimoto threshold:', tanimoto_t)
     print('  - Tanimoto direction:', ta_direction)        
+    print('\n')
     
     # Generate the output directory
     if not os.path.exists(outdir):
@@ -437,7 +438,9 @@ def main():
             
         train_and_evaluate_model(model, train_x, train_y, val_x, val_y, test_x, test_y, batch_size, num_epochs, training_dir, 'general', '_weights.hdf5', 'Start', True)
         weights_file = training_dir + '/general_weights.hdf5'
-        
+    
+    initial_specific = specific_smiles
+    
     # For each inner cycle of active learning:
     for i in range(round, inner_al + 1):
         
@@ -493,7 +496,6 @@ def main():
         # Generate new compounds
         t_mols, t_smiles, not_valid = generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant)
         
-        #t_mols, t_smiles, not_valid = generate_batch(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, batch_size=100)
         print('GENERATED COMPOUNDS')
         print(len(t_smiles))
         
@@ -502,6 +504,10 @@ def main():
         
         if len(t_mols)<=0:
             raise Exception("No valid compounds generated.")
+        
+        write_report(train_size=train.shape[0], val_size=validation.shape[0], test_size=test.shape[0], test_loss=score,
+                    test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, quant=quant,
+                    not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i))
         
         # Apply 1st filter: Substructural filters
         df_t_smiles = pd.DataFrame(t_smiles, columns=['smiles'])
@@ -514,11 +520,12 @@ def main():
             raise Exception("No valid compounds generated after the first filter.")
         
         # Compute properties of the generated compounds
-        df_gen_props = computing_properties_generated_set(specific_smiles, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction)
-
-        write_report(train_size=train.shape[0], val_size=validation.shape[0], test_size=test.shape[0], test_loss=score,
-                    test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, quant=quant,
-                    not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i))
+        if ta_direction == '<':
+            df_gen_props = computing_properties_generated_set(specific_smiles, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction)
+        elif ta_direction == '>':
+            df_gen_props = computing_properties_generated_set(initial_specific, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction)
+        else:
+            raise ValueError('Indicate the ta_direction: < or >')
     
         # Apply 2nd filter: Thresholds (QED, SA and Tanimoto) physicochemical properties
         df_with_threshold = apply_thresholds(df_gen_props=df_gen_props, property_thresholds=[qed_t, sascore_t, tanimoto_t], ta_direction=ta_direction)
