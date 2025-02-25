@@ -370,7 +370,26 @@ def main():
     
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir,\
-    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, restart = parseArg()        
+    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, restart = parseArg()
+    
+    # Print relevant information to log
+    print('PARAMETERS:')
+    print('  - General training set:', general_smiles)
+    print('  - Specific training set:', specific_smiles)
+    print('  - Weights file from pretrained:', weights_file)
+    print('  - Name:', name)
+    print('  - Output directory:', outdir)
+    print('  - Num epochs:', num_epochs)
+    print('  - Validation size:', val_size)
+    print('  - Test size:', test_size)
+    print('  - Batch size:', batch_size)
+    print('  - Sampling Temperature:', sampling_temp)
+    print('  - Quantity:', quant)
+    print('  - Inner Active Learning Cycles:', inner_al)
+    print('  - QED threshold:', qed_t)
+    print('  - SAscore threshold:', sascore_t)
+    print('  - Tanimoto threshold:', tanimoto_t)
+    print('  - Tanimoto direction:', ta_direction)        
     
     # Generate the output directory
     if not os.path.exists(outdir):
