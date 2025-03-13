@@ -63,6 +63,10 @@ def parseArg():
     # If tanimoto, choose direction of the filter
     if args.tanimoto and not args.ta_direction:
         parser.error("--tanimoto requires --ta_direction to indicate the direction of the tanimoto filter.")
+        
+    # If ta direction is ">", provide the initial specific set, because it compares the tanimoto against it
+    if args.ta_direction == '>' and args.restart and not args.specific_set_smiles:
+        parser.error("--ta_direction > and --restart requires --specific_set_smiles to compute the tanimoto against it")
 
     # Define variables
     general_smiles = args.general_set_smiles
