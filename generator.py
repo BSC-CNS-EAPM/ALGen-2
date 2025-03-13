@@ -492,6 +492,9 @@ def main():
         score, acc = model.evaluate([test_x, test_x], test_y, batch_size=batch_size, verbose=0)
         print(f'\nTest loss: {score}')
         print(f'Test accuracy: {acc}')
+        
+        timet = time.time() - time0
+        print('Time training: ', timet)
                     
         # Generate new compounds
         t_mols, t_smiles, not_valid = generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant)
@@ -510,7 +513,7 @@ def main():
                     not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i))
         
         # Apply 1st filter: Substructural filters
-        df_t_smiles = pd.DataFrame(t_smiles, columns=['smiles'])
+        df_t_smiles = pd.DataFrame({'smiles': t_smiles, 'mols': t_mols})
         df_t_smiles = apply_structural_filters(df_t_smiles)
         t_smiles = df_t_smiles['smiles'].tolist()
         print('FIRST FILTER:')

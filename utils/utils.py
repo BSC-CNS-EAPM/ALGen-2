@@ -1,6 +1,7 @@
 import tensorflow as tf
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 import rdkit.Chem as Chem
 from rdkit.Chem import rdMolDescriptors, Descriptors, Lipinski, QED, rdFingerprintGenerator
@@ -133,7 +134,9 @@ def compute_properties(smi):
     return smi, sa, qed, mw, logp, tpsa, nhd, nha
 
 def apply_thresholds(df_gen_props, property_thresholds, ta_direction):
-    df_gen_props.to_csv('test.csv')
+    '''
+    '''
+    
     df_gen_props_t = df_gen_props[df_gen_props['QED'] >= property_thresholds[0]]
     print('  - Compounds after QED:', len(df_gen_props_t))
     df_gen_props_t = df_gen_props_t[df_gen_props_t['SAscore'] <= property_thresholds[1]]
@@ -263,24 +266,18 @@ def filter_unique_molecules(df1, df2, threshold=1):
     
     return df1, filtered_df2
 
-def filter_rings_8_atoms(smiles):
+def filter_rings_8_atoms(mol):
     """Filter the molecules that have rings with 8 or more atoms"""
-    try:
-        mol = Chem.MolFromSmiles(smiles)
-    except:
-        print('Invalid smile when applying first structural filter')
-        return None
     rings = mol.GetRingInfo().AtomRings()
     #print(mol.GetRingInfo().NumRings())
     for ring in rings:        
         if len(ring) >= 8:
-            print('Ring with 8 or more atoms found on molecule with SMILES:', smiles)
+            print('Ring with 8 or more atoms found on molecule with SMILES:', Chem.MolToSmiles(mol))
             return None
-    return Chem.MolToSmiles(mol)
+    return mol
 
-def filter_3_more_fused_rings(smiles):
+def filter_3_more_fused_rings(mol):
     """Filter the molecules that have 3 or more fused rings"""
-    mol = Chem.MolFromSmiles(smiles)
     rings = mol.GetRingInfo().AtomRings()
     # Flatten the list and count occurrences, then get items with count > 1
     fused_rings_idxs =  [idx for idx, count in Counter([i for t in rings for i in t]).items() if count > 1]
@@ -296,16 +293,15 @@ def filter_3_more_fused_rings(smiles):
         intersected_rings_idxs = [i for t in intersected_rings for i in t]
         unique = set(intersected_rings_idxs)
         if len(unique) < len(intersected_rings_idxs):
-            print('3 or more fused rings found on molecule with SMILES:', smiles)
+            print('3 or more fused rings found on molecule with SMILES:', Chem.MolToSmiles(mol))
             return None
         else:
-            return Chem.MolToSmiles(mol)
+            return mol
     else:
-        return Chem.MolToSmiles(mol)
+        return mol
 
-def filter_3_4_rings_fused(smiles):
+def filter_3_4_rings_fused(mol):
     """Filter the molecules that have 3 or 4-atom rings fused with other rings"""
-    mol = Chem.MolFromSmiles(smiles)
     rings = mol.GetRingInfo().AtomRings()
     for ring in rings:
         if len(ring) == 3 or len(ring) == 4:
@@ -313,13 +309,12 @@ def filter_3_4_rings_fused(smiles):
             other_rings = set([i for t in other_rings for i in t])
             fused_rings_idxs = set(ring).intersection(other_rings)
             if len(fused_rings_idxs) > 1:
-                print('Fused 3-4-atom rings found on molecule with SMILES:', smiles)
+                print('Fused 3-4-atom rings found on molecule with SMILES:', Chem.MolToSmiles(mol))
                 return None
-    return Chem.MolToSmiles(mol)
+    return mol
 
-def filter_4_ring_with_substitutions(smiles):
+def filter_4_ring_with_substitutions(mol):
     """Filter the molecules that have 4-atom rings with more than 2 substitutions"""
-    mol = Chem.MolFromSmiles(smiles)
     if not mol: return None
     rings = mol.GetRingInfo().AtomRings()
     for ring in rings:
@@ -327,147 +322,143 @@ def filter_4_ring_with_substitutions(smiles):
             atoms = [mol.GetAtomWithIdx(i) for i in ring]
             bonds = [len(atom.GetNeighbors()) for atom in atoms]
             if sum([1 for b in bonds if b > 2]) > 2:
-                print('4-atom ring with more than 2 substitutions found on molecule with SMILES:', smiles)
+                print('4-atom ring with more than 2 substitutions found on molecule with SMILES:', Chem.MolToSmiles(mol))
                 return None
-    return Chem.MolToSmiles(mol)
+    return mol
 
-def filter_more_than_2_7rings(smiles):
+def filter_more_than_2_7rings(mol):
     """Filter the molecules that have 2 or more 7-membered rings"""
-    mol = Chem.MolFromSmiles(smiles)
     rings = mol.GetRingInfo().AtomRings()
     count = 0
     for ring in rings:
         if len(ring) >= 7:
             count += 1
     if count >= 2:
+        print('2 or more 7-membered rings found on molecules with SMILES:', Chem.MolToSmiles(mol))
         return None
-    return Chem.MolToSmiles(mol)
+    return mol
 
-def filter_consecutive_nitrogens_ring(smiles):
+def filter_consecutive_nitrogens_ring(mol):
     """Filter the molecules that have consecutive nitrogens in a ring"""
-    mol = Chem.MolFromSmiles(smiles)
     rings = mol.GetRingInfo().AtomRings()
     for ring in rings:
         atoms = [mol.GetAtomWithIdx(i).GetSymbol() for i in ring]
         if 'N' not in atoms: continue
         for i in range(len(ring)-1):
             if mol.GetAtomWithIdx(ring[i]).GetAtomicNum() == 7 and mol.GetAtomWithIdx(ring[i+1]).GetAtomicNum() == 7:
-                print('Consecutive nitrogens in a ring found on molecule with SMILES:', smiles)
+                print('Consecutive nitrogens in a ring found on molecule with SMILES:', Chem.MolToSmiles(mol))
                 return None
         if mol.GetAtomWithIdx(ring[0]).GetAtomicNum() == 7 and mol.GetAtomWithIdx(ring[-1]).GetAtomicNum() == 7:
-            print('Consecutive nitrogens in a ring found on molecule with SMILES:', smiles)
+            print('Consecutive nitrogens in a ring found on molecule with SMILES:', Chem.MolToSmiles(mol))
             return None
-    return Chem.MolToSmiles(mol)
+    return mol
 
-def filter_more_than_4_chiral_centers(smiles):
+def filter_more_than_4_chiral_centers(mol):
     """Filter the molecules that have more than 4 chiral centers"""
-    mol = Chem.MolFromSmiles(smiles)
     chiral = Chem.FindMolChiralCenters(mol)
     if len(chiral) > 4:
-        print('More than 4 chiral centers found on molecule with SMILES:', smiles)
+        print('More than 4 chiral centers found on molecule with SMILES:', Chem.MolToSmiles(mol))
         return None
-    return Chem.MolToSmiles(mol)
+    return mol
 
-def filter_manual_SMARTS_pattens(smiles):
+def filter_manual_SMARTS_pattens(mol):
     """Filter the molecules that have manual SMARTS patterns"""
     patterns = ['[C-]']
-    mol = Chem.MolFromSmiles(smiles)
     for pattern in patterns:
         if mol.HasSubstructMatch(Chem.MolFromSmarts(pattern)):
-            print('Manual SMARTS pattern found on molecule with SMILES:', smiles, ' --> ', pattern)
+            print('Manual SMARTS pattern found on molecule with SMILES:', Chem.MolToSmiles(mol), ' --> ', pattern)
             return None
-    return Chem.MolToSmiles(mol)
+    return mol
 
-def filter_PAINS(smiles):
-    mol = Chem.MolFromSmiles(smiles)
+def filter_PAINS(mol):
     params_pains = FilterCatalogParams()
     params_pains.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS)
     catalog_pains = FilterCatalog(params_pains)
     flag = catalog_pains.HasMatch(mol) # Check if there is a matching PAINS
     if flag:
         description = [entry.GetDescription() for entry in catalog_pains.GetMatches(mol)]
-        print('PAINS found on molecule with SMILES:', smiles, ' --> ', description)
+        print('PAINS found on molecule with SMILES:', Chem.MolToSmiles(mol), ' --> ', description)
         return None
     else:
-        return Chem.MolToSmiles(mol)
+        return mol
 
-def filter_Brenk(smiles):
-    mol = Chem.MolFromSmiles(smiles)
+def filter_Brenk(mol):
     params_unwanted = FilterCatalogParams()
     params_unwanted.AddCatalog(FilterCatalogParams.FilterCatalogs.BRENK)
     catalog_unwanted = FilterCatalog(params_unwanted)
     flag = catalog_unwanted.HasMatch(mol) # Check if there is a matching unwanted substructure
     if flag:
         description = [entry.GetDescription() for entry in catalog_unwanted.GetMatches(mol)]
-        print('Brenk found on molecule with SMILES:', smiles, ' --> ', description)
+        print('Brenk found on molecule with SMILES:', Chem.MolToSmiles(mol), ' --> ', description)
         return None
     else:
-        return Chem.MolToSmiles(mol)
+        return mol
 
-def filter_NIH(smiles):
-    mol = Chem.MolFromSmiles(smiles)
+def filter_NIH(mol):
     params_nih = FilterCatalogParams()
     params_nih.AddCatalog(FilterCatalogParams.FilterCatalogs.NIH)
     catalog_nih = FilterCatalog(params_nih)
     flag = catalog_nih.HasMatch(mol) # Check if there is a matching NIH
     if flag:
         description = [entry.GetDescription() for entry in catalog_nih.GetMatches(mol)]
-        print('NIH found on molecule with SMILES:', smiles, ' --> ', description)
+        print('NIH found on molecule with SMILES:', Chem.MolToSmiles(mol), ' --> ', description)
         return None
     else:
-        return Chem.MolToSmiles(mol)
+        return mol
     
-def filter_REOS(smiles):
+def filter_REOS(mol):
     """Adds Pat Walter's Chembl Filters.
         The filters are based on the REOS (Rapid Elimination Of Swill).
         The Catalog CHEMBL contains all these filters:
         CHEMBL = CHEMBL_Glaxo | CHEMBL_Dundee | CHEMBL_BMS | CHEMBL_SureChEMBL |
         CHEMBL_MLSMR | CHEMBL_Inpharmatica | CHEMBL_LINT"""
         
-    mol = Chem.MolFromSmiles(smiles)
     params_reos = FilterCatalogParams()
     params_reos.AddCatalog(FilterCatalogParams.FilterCatalogs.CHEMBL)
     catalog_reos = FilterCatalog(params_reos)
     flag = catalog_reos.HasMatch(mol) # Check if there is a matching REOS
     if flag:
         description = [entry.GetDescription() for entry in catalog_reos.GetMatches(mol)]
-        print('REOS found on molecule with SMILES:', smiles, ' --> ', description)
+        print('REOS found on molecule with SMILES:', Chem.MolToSmiles(mol), ' --> ', description)
         return None
     else:
-        return Chem.MolToSmiles(mol)
+        return mol
 
 def apply_structural_filters(df):
     """Apply structural filters of unwanted ring substructures"""
 
-    df['smiles'] = df['smiles'].apply(filter_rings_8_atoms)
-    df.dropna(subset=['smiles'], inplace=True)
-    df['smiles'] = df['smiles'].apply(filter_3_more_fused_rings)
-    df.dropna(subset=['smiles'], inplace=True)
-    df['smiles'] = df['smiles'].apply(filter_3_4_rings_fused)
-    df.dropna(subset=['smiles'], inplace=True)
-    df['smiles'] = df['smiles'].apply(filter_4_ring_with_substitutions)
-    df.dropna(subset=['smiles'], inplace=True)
-    df['smiles'] = df['smiles'].apply(filter_more_than_2_7rings)
-    df.dropna(subset=['smiles'], inplace=True)
-    df['smiles'] = df['smiles'].apply(filter_consecutive_nitrogens_ring)
-    df.dropna(subset=['smiles'], inplace=True)
-    df['smiles'] = df['smiles'].apply(filter_more_than_4_chiral_centers)
-    df.dropna(subset=['smiles'], inplace=True)
-    df['smiles'] = df['smiles'].apply(filter_manual_SMARTS_pattens)
-    df.dropna(subset=['smiles'], inplace=True)
+    df.dropna(subset=['mols'], inplace=True)  
+    df['mols'] = df['mols'].apply(filter_rings_8_atoms)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(filter_3_more_fused_rings)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(filter_3_4_rings_fused)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(filter_4_ring_with_substitutions)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(filter_more_than_2_7rings)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(filter_consecutive_nitrogens_ring)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(filter_more_than_4_chiral_centers)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(filter_manual_SMARTS_pattens)
+    df.dropna(subset=['mols'], inplace=True)
     
     return df
 
 def apply_unwanted_substruct_filters(df):
     """Apply structural filters of PAINS, Brenk, and NIH"""
 
-    df['smiles'] = df['smiles'].apply(filter_PAINS)
-    df.dropna(subset=['smiles'], inplace=True)
-    df['smiles'] = df['smiles'].apply(filter_Brenk)
-    df.dropna(subset=['smiles'], inplace=True)
-    df['smiles'] = df['smiles'].apply(filter_NIH)
-    df.dropna(subset=['smiles'], inplace=True)
-    df['smiles'] = df['smiles'].apply(filter_REOS)
-    df.dropna(subset=['smiles'], inplace=True)
+    df['mols'] = df['smiles'].apply(lambda smile: Chem.MolFromSmiles(smile) if pd.notna(smile) else None)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(filter_PAINS)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(filter_Brenk)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(filter_NIH)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(filter_REOS)
+    df.dropna(subset=['mols'], inplace=True)
 
     return df
