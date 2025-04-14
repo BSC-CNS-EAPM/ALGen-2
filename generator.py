@@ -48,6 +48,7 @@ def parseArg():
     parser.add_argument("-sa", "--sascore", required=False, type=float, help="threshold for sascore value of generated molecules.")
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
     parser.add_argument("-tad", "--ta_direction", required=False, type=str, help="direction of the tanimoto threshold filter. Options: <, >")
+    parser.add_argument("-sub", "--subset_optimizer", required=False, type=str, help="if optimizer, try the subset where to compute tanimoto similarity.")
     parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
     
     args = parser.parse_args()
@@ -68,6 +69,11 @@ def parseArg():
     if args.ta_direction == '>' and args.restart and not args.specific_set_smiles:
         parser.error("--ta_direction > and --restart requires --specific_set_smiles to compute the tanimoto against it")
 
+    # If there is a subset for optimizer generation, the ta direction should always be >
+    if args.subset_optimizer and not args.ta_direction == '>':
+        parser.error("--subset_optimizer only works when --ta_direction is > because we aim to optimize\
+                    the generation by computing the tanimoto similarity against this personalized subset")
+        
     # Define variables
     general_smiles = args.general_set_smiles
     num_epochs = args.epochs
@@ -83,6 +89,7 @@ def parseArg():
     sascore_t = args.sascore
     tanimoto_t = args.tanimoto
     ta_direction = args.ta_direction
+    subset = args.subset_optimizer
     restart = args.restart
     
     # Define default variables for not required arguments
@@ -98,7 +105,7 @@ def parseArg():
         inner_al = 1
 
     return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity,\
-    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, restart
+    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, restart
 
 
 def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
@@ -374,7 +381,7 @@ def main():
     
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir,\
-    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, restart = parseArg()
+    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, restart = parseArg()
     
     # Print relevant information to log
     print('PARAMETERS:')
@@ -393,7 +400,8 @@ def main():
     print('  - QED threshold:', qed_t)
     print('  - SAscore threshold:', sascore_t)
     print('  - Tanimoto threshold:', tanimoto_t)
-    print('  - Tanimoto direction:', ta_direction)        
+    print('  - Tanimoto direction:', ta_direction)
+    print('  - Subset optimizer:', subset)      
     print('\n')
     
     # Generate the output directory
@@ -530,7 +538,10 @@ def main():
         if ta_direction == '<':
             df_gen_props = computing_properties_generated_set(specific_smiles, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction)
         elif ta_direction == '>':
-            df_gen_props = computing_properties_generated_set(initial_specific, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction)
+            if subset:
+                df_gen_props = computing_properties_generated_set(subset, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction)
+            else:
+                df_gen_props = computing_properties_generated_set(initial_specific, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction)
         else:
             raise ValueError('Indicate the ta_direction: < or >')
     
