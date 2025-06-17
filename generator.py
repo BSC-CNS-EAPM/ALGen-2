@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 import os
 import time
+import rdkit.Chem as Chem
 
 def parseArg():
     '''
@@ -453,9 +454,14 @@ def main():
     
     initial_specific = specific_smiles
     
+    timegt = time.time() - time0
+    print('Time training general: ', timegt, 'seconds')
+    print('Time human readable:', time.strftime("%H:%M:%S", time.gmtime(timegt)))
+
     # For each inner cycle of active learning:
     for i in range(round, inner_al + 1):
-        
+        timeal0 = time.time()
+
         # TODO: What happens if no specific set (specific_smiles) is provided? It should continue generating but not targeted. Implement!!
         
         if restart:
@@ -505,18 +511,28 @@ def main():
         print(f'\nTest loss: {score}')
         print(f'Test accuracy: {acc}')
         
-        timet = time.time() - time0
-        print('Time training: ', timet)
-                    
+        timest = time.time() - timeal0
+        print('Time training specific: ', timest, 'seconds')
+        print('Time human readable:', time.strftime("%H:%M:%S", time.gmtime(timest)))
+        
         # Generate new compounds
+        timeg0 = time.time()
         t_mols, t_smiles, not_valid = generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant)
         
+        # # provisional to test the filters
+        # smiles_file = open('/gpfs/projects/bsc72/julia/ALGen_runnings/test_time/affinityAL/smiles5.smi', 'r')
+        # t_smiles = [x for x in smiles_file]
+        # print(t_smiles)
+        # t_mols = [Chem.MolFromSmiles(x) for x in t_smiles]
+        # print(t_mols)
+
         print('GENERATED COMPOUNDS')
         print(len(t_smiles))
         
-        timeg = time.time() - time0
+        timeg = time.time() - timeg0
         print('Time generation: ', timeg)
-        
+        print('Time human readable:', time.strftime("%H:%M:%S", time.gmtime(timeg)))
+
         if len(t_mols)<=0:
             raise Exception("No valid compounds generated.")
         
@@ -524,6 +540,8 @@ def main():
                     test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, quant=quant,
                     not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i))
         
+        timef0 = time.time()
+
         # Apply 1st filter: Substructural filters
         df_t_smiles = pd.DataFrame({'smiles': t_smiles, 'mols': t_mols})
         df_t_smiles = apply_structural_filters(df_t_smiles)
@@ -561,6 +579,10 @@ def main():
         if len(df_filtered)==0:
             raise Exception("No valid compounds generated after the last filter.")
         
+        timef = time.time() - timef0
+        print('Time Filters Chemical AL: ', timef, 'seconds')
+        print('Time human readable:', time.strftime("%H:%M:%S", time.gmtime(timef)))
+
         if not os.path.exists(inner_output_dir + '_' + str(i+1)):
             os.mkdir(inner_output_dir + '_' + str(i+1))
             
@@ -577,9 +599,9 @@ def main():
         # Change the name of the specific training set to the new set (generated + previous specific training set)
         specific_smiles = inner_output_dir + '_' + str(i+1) + '/' + name + '_generated_smiles_merged.csv'
         
-        timeal = time.time() - time0
-        print('Time Active Learning: ', timeal)
-
+        timeal = time.time() - timeal0
+        print('Time Chemical AL cycle: ', timeal, 'seconds')
+        print('Time human readable:', time.strftime("%H:%M:%S", time.gmtime(timeal)))
 
 if __name__ == "__main__":
     # try:
