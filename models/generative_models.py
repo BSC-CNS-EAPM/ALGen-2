@@ -53,7 +53,7 @@ def sample_smiles(gen_model, latent_to_states_model, latent, n_vocab, sampling_t
     sequence = ""
 
     for i in range(n_vocab):
-        preds = gen_model.predict(samplevec)[0][-1]
+        preds = gen_model.predict_on_batch(samplevec)[0][-1]
         if sampling_temp == 1.0:
           sampleidx = np.argmax(preds)
         else:
@@ -98,10 +98,8 @@ def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vo
     not_valid = 0
 
     for i in range(quant):
-        print("Iteration: ", i)
         latent_vec = latent_seed + scale*(np.random.randn(latent_seed.shape[1]))
         out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
-        print(out)
         
         if not protein:
           mol = Chem.MolFromSmiles(out)
@@ -118,7 +116,6 @@ def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vo
 
         # clear the memory every 100 iterations
         if i % 100 == 0:
-          clear_session()
           gc.collect()
       
     print("\nTried to generate {} compounds and {} were not valid.".format(quant, not_valid))
