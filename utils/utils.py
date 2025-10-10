@@ -133,7 +133,7 @@ def compute_properties(smi):
 
     return smi, sa, qed, mw, logp, tpsa, nhd, nha
 
-def apply_thresholds(df_gen_props, property_thresholds, ta_direction):
+def apply_thresholds(df_gen_props, property_thresholds, mw=None, ta_direction='<'):
     '''
     '''
     
@@ -149,6 +149,9 @@ def apply_thresholds(df_gen_props, property_thresholds, ta_direction):
     else:
         raise ValueError('Indicate the ta_direction: < or >')
     print('  - Compounds after tanimoto:', len(df_gen_props_t))
+    if mw:
+        df_gen_props_t = df_gen_props_t[(df_gen_props_t['mw'] >= mw[0]) & (df_gen_props_t['mw'] <= mw[1])]
+    print('  - Compounds after mw filter:', len(df_gen_props_t))
     
     df_gen_props_t = df_gen_props_t[['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'tan_mean', 'tan_max']]
     return df_gen_props_t

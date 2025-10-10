@@ -50,6 +50,7 @@ def parseArg():
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
     parser.add_argument("-tad", "--ta_direction", required=False, type=str, help="direction of the tanimoto threshold filter. Options: <, >")
     parser.add_argument("-sub", "--subset_optimizer", required=False, type=str, help="if optimizer, try the subset where to compute tanimoto similarity.")
+    parser.add_argument("-mw", "--molecular_weight", required=False, nargs=2, type=float, metavar=('MIN', 'MAX'), help="filter of molecular weight range, e.g. --mw 20 500")
     parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
     
     args = parser.parse_args()
@@ -91,6 +92,7 @@ def parseArg():
     tanimoto_t = args.tanimoto
     ta_direction = args.ta_direction
     subset = args.subset_optimizer
+    mw = args.molecular_weight
     restart = args.restart
     
     # Define default variables for not required arguments
@@ -106,7 +108,8 @@ def parseArg():
         inner_al = 1
 
     return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity,\
-    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, restart
+    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset,\
+    mw, restart
 
 
 def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
@@ -382,7 +385,8 @@ def main():
     
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir,\
-    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, restart = parseArg()
+    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, mw,\
+    restart = parseArg()
     
     # Print relevant information to log
     print('PARAMETERS:')
@@ -402,7 +406,8 @@ def main():
     print('  - SAscore threshold:', sascore_t)
     print('  - Tanimoto threshold:', tanimoto_t)
     print('  - Tanimoto direction:', ta_direction)
-    print('  - Subset optimizer:', subset)      
+    print('  - Subset optimizer:', subset)
+    print('  - Molecular weight:', mw)      
     print('\n')
     
     # Generate the output directory
@@ -564,7 +569,7 @@ def main():
             raise ValueError('Indicate the ta_direction: < or >')
     
         # Apply 2nd filter: Thresholds (QED, SA and Tanimoto) physicochemical properties
-        df_with_threshold = apply_thresholds(df_gen_props=df_gen_props, property_thresholds=[qed_t, sascore_t, tanimoto_t], ta_direction=ta_direction)
+        df_with_threshold = apply_thresholds(df_gen_props=df_gen_props, property_thresholds=[qed_t, sascore_t, tanimoto_t], mw=mw, ta_direction=ta_direction)
         print('SECOND FILTER:')
         print(len(df_with_threshold))
         
