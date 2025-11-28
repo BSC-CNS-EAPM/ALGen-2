@@ -1,3 +1,6 @@
+import os
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # shrink TensorFlow logger verbosity
+
 import pdb
 from re import L
 import tensorflow as tf
@@ -22,9 +25,18 @@ import glob
 
 from tqdm import tqdm
 
-import os
 import time
 import rdkit.Chem as Chem
+from rdkit import RDLogger
+from tensorflow.keras.optimizers.schedules import CosineDecayRestarts
+
+# Hide routine RDKit logs in stderr (parsing and kekulization noise from invalid SMILES)
+RDLogger.DisableLog('rdApp.warning')
+RDLogger.DisableLog('rdApp.error')
+
+SEED = 22
+os.environ['PYTHONHASHSEED'] = str(SEED)
+random.seed(SEED)
 
 def parseArg():
     '''
@@ -39,7 +51,7 @@ def parseArg():
     parser.add_argument("-t", "--test_size", required=True, type=float, help="test set size.")
     parser.add_argument("-b", "--batch_size", required=True, type=int, help="batch size.")
     parser.add_argument("-s", "--sampling_temperature", required=False, type=float, help="sampling temperature.")
-    parser.add_argument("-q", "--quantity", required=True, type=int, help="amount of molecules to be generated.")
+    parser.add_argument("-q", "--quantity", required=True, type=int, help="target amount defined by --quantity-mode (valid molecules or total attempts).")
     parser.add_argument("-n", "--name", required=True, type=str, help="name of generative run.")
     parser.add_argument("-o", "--outdir", required=True, type=str, help="output directory.")
     parser.add_argument("-pa", "--specific_set_smiles", required=False, type=str, help="path to alternative smiles file.")
@@ -49,9 +61,12 @@ def parseArg():
     parser.add_argument("-sa", "--sascore", required=False, type=float, help="threshold for sascore value of generated molecules.")
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
     parser.add_argument("-tad", "--ta_direction", required=False, type=str, help="direction of the tanimoto threshold filter. Options: <, >")
+    parser.add_argument("-tp", "--top_p", required=False, type=float, help="nucleus (top-p) sampling cutoff (0-1)")
+    parser.add_argument("--disable_top_p", action="store_true", help="disable nucleus sampling and rely solely on temperature sampling.")
     parser.add_argument("-sub", "--subset_optimizer", required=False, type=str, help="if optimizer, try the subset where to compute tanimoto similarity.")
     parser.add_argument("-mw", "--molecular_weight", required=False, nargs=2, type=float, metavar=('MIN', 'MAX'), help="filter of molecular weight range, e.g. --mw 20 500")
     parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
+    parser.add_argument("-skip_catalog_filter", "--skip_catalog_filter", default=False, help="Skip PAINS/Brenk/NIH/CHEMBL substructure filter step (True/False).")
     
     args = parser.parse_args()
     
@@ -94,6 +109,10 @@ def parseArg():
     subset = args.subset_optimizer
     mw = args.molecular_weight
     restart = args.restart
+    skip_third_filter = args.skip_catalog_filter
+    top_p = None if args.disable_top_p else args.top_p
+    if top_p is not None and not 0 < top_p <= 1:
+        parser.error("--top_p must be in the interval (0, 1].")
     
     # Define default variables for not required arguments
     if args.sampling_temperature:
@@ -107,9 +126,9 @@ def parseArg():
     else:
         inner_al = 1
 
-    return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, quantity,\
+    return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, top_p, quantity, \
     name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset,\
-    mw, restart
+    mw, skip_third_filter, restart
 
 
 def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
@@ -177,11 +196,27 @@ def train_and_evaluate_model(model, train_pred, train_target, val_pred, val_targ
     steps_per_epoch = len(train_pred) // b_size
 
     # Generate a learning rate schedule
-    lr_schedule = tf.keras.optimizers.schedules.InverseTimeDecay(0.0001, decay_steps=steps_per_epoch*50, decay_rate=1.0, staircase=False)
-    opt = Adam()
+    # lr_schedule = tf.keras.optimizers.schedules.InverseTimeDecay(
+    #     initial_learning_rate=1e-3,           
+    #     decay_steps=steps_per_epoch * 50,
+    #     decay_rate=0.5,
+    #     staircase=True
+    # )
+    lr_schedule = CosineDecayRestarts(
+        initial_learning_rate=1e-3,
+        first_decay_steps=steps_per_epoch * 100,
+        t_mul=1.0,
+        m_mul=1.0,
+        alpha=0.0
+    )
+    opt = Adam(learning_rate=lr_schedule, clipnorm=1.0)  # clip gradients to norm=1
 
-    # Configure the model for training
-    model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['acc'], run_eagerly=False)
+    model.compile(
+        optimizer=opt,
+        loss='categorical_crossentropy',
+        metrics=['acc'],
+        run_eagerly=False
+    )
 
     training_generator = Data_Generator(train_pred, train_target, b_size)
     validation_generator = Data_Generator(val_pred, val_target, b_size)
@@ -203,8 +238,28 @@ def train_and_evaluate_model(model, train_pred, train_target, val_pred, val_targ
 
     # Train the model
     validation_steps = len(val_pred) // b_size
-    history = model.fit(training_generator, steps_per_epoch=steps_per_epoch, epochs=n_epochs, verbose=1, validation_data=validation_generator, validation_steps=validation_steps,
-                        shuffle=True, callbacks=callbacks_list)
+
+    # add ReduceLROnPlateau
+    plateau = tf.keras.callbacks.ReduceLROnPlateau(
+        monitor='val_loss',
+        factor=0.5,
+        patience=5,
+        verbose=1,
+        min_lr=1e-6
+    )
+    callbacks_list.append(plateau)
+
+    # you still keep your ModelCheckpoint / EarlyStopping …
+    history = model.fit(
+        training_generator,
+        steps_per_epoch=steps_per_epoch,
+        epochs=n_epochs,
+        verbose=1,
+        validation_data=validation_generator,
+        validation_steps=len(val_pred)//b_size,
+        shuffle=True,
+        callbacks=callbacks_list
+    )
 
     # Generate the accuracy and loss plots
     plot_acc_loss(history=history, name=name, output_dir=output_directory)
@@ -272,7 +327,7 @@ def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_in
     print('Computing properties...')
 
     if mom == 'restart':
-        simles_fps = smiles
+        smiles_fps = smiles
 
     elif mom == 'initial':
         smiles_fps = compute_tanimoto_init(smiles)
@@ -363,8 +418,7 @@ def model_vae(model, size, test_pred):
 
     test_latent_space = encoder.predict(test_pred)
 
-    rand_seed = random.randint(0, test_latent_space.shape[0])
-
+    rand_seed = random.randrange(test_latent_space.shape[0])
     latent_seed = test_latent_space[rand_seed:rand_seed + 1]
 
     scale = 0.5
@@ -384,8 +438,8 @@ def main():
             print("Error setting GPU config:", e)
     
     # Set all variables to the given argument values
-    general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, quant, name, outdir,\
-    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, mw,\
+    general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, top_p, quant, name, outdir,\
+    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, mw, skip_third_filter,\
     restart = parseArg()
     
     # Print relevant information to log
@@ -400,6 +454,7 @@ def main():
     print('  - Test size:', test_size)
     print('  - Batch size:', batch_size)
     print('  - Sampling Temperature:', sampling_temp)
+    print('  - Top-p (nucleus) sampling:', 'disabled' if top_p is None else top_p)
     print('  - Quantity:', quant)
     print('  - Inner Active Learning Cycles:', inner_al)
     print('  - QED threshold:', qed_t)
@@ -408,6 +463,7 @@ def main():
     print('  - Tanimoto direction:', ta_direction)
     print('  - Subset optimizer:', subset)
     print('  - Molecular weight:', mw)      
+    print('  - Skip third filter (PAINS/Brenk/NIH/CHEMBL):', skip_third_filter)
     print('\n')
     
     # Generate the output directory
@@ -441,6 +497,11 @@ def main():
 
     # Split the general training dataset into train, test and validation one-hot-encoded
     train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_general, val_size, test_size, max_len)
+    
+    # Store original data sizes for reporting
+    original_train_size = train.shape[0]
+    original_val_size = validation.shape[0]
+    original_test_size = test.shape[0]
     
     # Define the LSTM VAE model architecture based on the input and output dimensions of the data
     model = lstm_model(train_x, train_y)
@@ -520,10 +581,14 @@ def main():
         print('Time training specific: ', timest, 'seconds')
         print('Time human readable:', time.strftime("%H:%M:%S", time.gmtime(timest)))
         
-        # Generate new compounds
+        # Generate new compounds with nucleus (top-p) sampling until N valids
         timeg0 = time.time()
-        t_mols, t_smiles, not_valid = generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant)
-        
+        t_mols, t_smiles, not_valid, total_attempts = generate_batch(
+            gen_model, latent_to_states_model, latent_seed,
+            sampling_temp=sampling_temp, n_vocab=n_vocab,
+            scale=scale, quant=quant,
+            batch_size=batch_size, top_p=top_p
+        )
         # # provisional to test the filters
         # smiles_file = open('/gpfs/projects/bsc72/julia/ALGen_runnings/test_time/affinityAL/smiles5.smi', 'r')
         # t_smiles = [x for x in smiles_file]
@@ -541,9 +606,13 @@ def main():
         if len(t_mols)<=0:
             raise Exception("No valid compounds generated.")
         
-        write_report(train_size=train.shape[0], val_size=validation.shape[0], test_size=test.shape[0], test_loss=score,
-                    test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, quant=quant,
-                    not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i))
+        valid_generated = len(t_mols)
+        print(f"Collected {valid_generated} valid molecules (attempts={total_attempts}).")
+
+        write_report(train_size=original_train_size, val_size=original_val_size, test_size=original_test_size, test_loss=score,
+            test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, top_p=top_p, quantity_requested=quant,
+            valid_generated=valid_generated, total_attempts=total_attempts,
+            not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i))
         
         timef0 = time.time()
 
@@ -576,10 +645,14 @@ def main():
         if len(df_with_threshold)==0:
             raise Exception("No valid compounds generated after the second filter.")
         
-        # Apply 3rd filter: FilterCatog PAINS, Brenk, NIH, CHEMBL
-        df_filtered = apply_unwanted_substruct_filters(df_with_threshold)
-        print('THIRD FILTER:')
-        print(len(df_filtered))
+        # Apply 3rd filter: FilterCatog PAINS, Brenk, NIH, CHEMBL (optional)
+        if skip_third_filter:
+            print('THIRD FILTER: skipped by flag (--skip_catalog_filter)')
+            df_filtered = df_with_threshold
+        else:
+            df_filtered = apply_unwanted_substruct_filters(df_with_threshold)
+            print('THIRD FILTER:')
+            print(len(df_filtered))
         
         if len(df_filtered)==0:
             raise Exception("No valid compounds generated after the last filter.")
@@ -607,6 +680,20 @@ def main():
         timeal = time.time() - timeal0
         print('Time Chemical AL cycle: ', timeal, 'seconds')
         print('Time human readable:', time.strftime("%H:%M:%S", time.gmtime(timeal)))
+
+    # After all active-learning cycles, report total runtime
+    time_total = time.time() - time0
+    print(f"\nTotal execution time: {time_total:.2f} seconds")
+    print("Total human-readable time:", time.strftime("%H:%M:%S", time.gmtime(time_total)))
+
+    # Persist execution time in the final report directory
+    final_report_dir = inner_output_dir + '_' + str(inner_al)
+    if os.path.exists(final_report_dir):
+        write_report(train_size=original_train_size, val_size=original_val_size, test_size=original_test_size, test_loss=score,
+                     test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, top_p=top_p,
+                     quantity_requested=quant, valid_generated=valid_generated,
+                     total_attempts=total_attempts, not_valid=not_valid, name=name, outdir=final_report_dir,
+                     execution_time=time_total)
 
 if __name__ == "__main__":
     # try:

@@ -7,10 +7,11 @@ import gc
 from rdkit import Chem
 
 from data.data_processing import int_to_smiles, smiles_to_int, amino_to_int, int_to_amino
-from utils.utils import sample_with_temp
+from utils.utils import sample_with_temp, nucleus_sample
 
 import numpy as np
 import pdb
+
 
 def lstm_model(X, y):
     '''
@@ -42,7 +43,7 @@ def lstm_model(X, y):
     return model
 
 
-def sample_smiles(gen_model, latent_to_states_model, latent, n_vocab, sampling_temp):
+def sample_smiles(gen_model, latent_to_states_model, latent, n_vocab, sampling_temp, top_p=None):
 
     states = latent_to_states_model.predict(latent.reshape(1, -1))
     gen_model.layers[1].reset_states(states=[states[0], states[1]])
@@ -54,10 +55,12 @@ def sample_smiles(gen_model, latent_to_states_model, latent, n_vocab, sampling_t
 
     for i in range(n_vocab):
         preds = gen_model.predict_on_batch(samplevec)[0][-1]
-        if sampling_temp == 1.0:
-          sampleidx = np.argmax(preds)
+        if top_p is not None:
+            sampleidx = nucleus_sample(preds, p=top_p)
+        elif sampling_temp == 1.0:
+            sampleidx = np.argmax(preds)
         else:
-          sampleidx = sample_with_temp(preds, sampling_temp)
+            sampleidx = sample_with_temp(preds, sampling_temp)
         samplechar = int_to_smiles[str(sampleidx)]
         if samplechar != "E":
             sequence += samplechar
@@ -92,15 +95,14 @@ def sample_sequences(gen_model, latent_to_states_model, latent, n_vocab, samplin
             break
     return sequence
 
-def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, protein=None):
+def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, top_p=None, protein=None):
 
     samples, mols = [], []
     not_valid = 0
 
     for i in range(quant):
         latent_vec = latent_seed + scale*(np.random.randn(latent_seed.shape[1]))
-        out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
-        
+        out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, top_p)
         if not protein:
           mol = Chem.MolFromSmiles(out)
 
@@ -111,8 +113,8 @@ def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vo
             not_valid += 1
           
         else:
-          out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
-          samples.append(out)
+            out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
+            samples.append(out)
 
         # clear the memory every 100 iterations
         if i % 100 == 0:
@@ -122,45 +124,39 @@ def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vo
 
     return mols, samples, not_valid
   
-def generate_batch(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, batch_size=128, protein=None):
+def generate_batch(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, batch_size=128, top_p=None, protein=None):
     samples, mols = [], []
-    not_valid = 0
-    total_generated = 0  # Tracks total molecules generated so far (valid + invalid)
+    total_attempts = 0
 
-    while total_generated < quant:  # Continue until exactly `quant` molecules are generated
-        print(f"Generating batch to reach {quant} total molecules (current: {total_generated})")
-        
-        # Adjust batch size to not overshoot the required number of molecules
-        current_batch_size = min(batch_size, quant - total_generated)
+    while True:
+        remaining_attempts = quant - total_attempts
+        if remaining_attempts <= 0:
+            break
+        current_batch_size = min(batch_size, remaining_attempts)
+
+        print(f"Generating batch to reach target | valid so far: {len(mols)} | attempts so far: {total_attempts}")
+
         latent_vecs = latent_seed + scale * np.random.randn(current_batch_size, latent_seed.shape[1])
-
-        # Predict states in batch
         states = latent_to_states_model.predict(latent_vecs)
         print(f"Generated latent states for batch of size: {current_batch_size}")
 
-        # Generate SMILES or sequences for the current batch
         for latent_vec, state in zip(latent_vecs, states):
+            total_attempts += 1
             if protein:
                 out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
                 samples.append(out)
             else:
-                out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
-                print(f"Generated SMILES: {out}")
+                out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, top_p)
                 mol = Chem.MolFromSmiles(out)
                 if mol:
-                    print(f"Appending valid SMILES: {out}")
                     mols.append(mol)
                     samples.append(out)
-                else:
-                    print(f"Invalid SMILES: {out}")
-                    not_valid += 1
-                    
-            total_generated += 1  # Increment total generated counter
 
-        # Clear the memory after each batch
-        clear_session()
-        tf.keras.backend.clear_session()
-        gc.collect()
-    
-    print(f"\nTried to generate {quant} compounds. Generated {total_generated} molecules ({len(mols)} valid, {not_valid} invalid).")
-    return mols, samples, not_valid
+    clear_session()
+    tf.keras.backend.clear_session()
+    gc.collect()
+
+    not_valid = total_attempts - len(mols)
+    print(f"\nCollected {len(mols)} valid molecules after {total_attempts} attempts ({not_valid} invalid).")
+
+    return mols[:quant], samples[:quant], not_valid, total_attempts

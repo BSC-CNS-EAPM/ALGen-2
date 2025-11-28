@@ -18,7 +18,7 @@ import deepsmiles as ds
 from collections import Counter
 
 
-def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, batch_size, sampling_temp, quant, not_valid, name, outdir):
+def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, batch_size, sampling_temp, top_p, quantity_requested, valid_generated, total_attempts, not_valid, name, outdir, execution_time=None):
     with open(outdir + "/report_" + name + '.out', 'w+') as r:
         r.write('#######################################\n')
         r.write('Report for generative run ' + name + '\n')
@@ -26,6 +26,8 @@ def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, b
         r.write('Model trained for: ' + str(epochs)+ ' epoch' + '\n')
         r.write('Chosen batch size: ' + str(batch_size)+ '\n')
         r.write('Sampling temperature: ' + str(sampling_temp)+ '\n')
+        r.write('Top-p (nucleus) sampling: ' + str(top_p)+ '\n')
+        r.write('Quantity requested: ' + str(quantity_requested) + '\n')
         r.write('#######################################'+ '\n')
         r.write('Train size: ' + str(train_size)+ '\n')
         r.write('Validation size: ' + str(val_size)+ '\n')
@@ -34,12 +36,15 @@ def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, b
         r.write('Test loss: ' + str(test_loss)+ '\n')
         r.write('Test accuracy: ' + str(test_acc)+ '\n')
         r.write('#######################################'+ '\n')
-        r.write('Tried to generate ' + str(quant) + ' compounds and ' + str(not_valid) + ' were not valid'+ '\n')
-        if not_valid > 0:
-            success_rate = (1 - float(not_valid)/(float(quant))) * 100
+        r.write('Tried to generate ' + str(total_attempts) + ' compounds and ' + str(not_valid) + ' were not valid'+ '\n')
+        r.write('Valid molecules generated: ' + str(valid_generated) + '\n')
+        if total_attempts > 0:
+            success_rate = (float(valid_generated) / float(total_attempts)) * 100
         else:
             success_rate = 0.0
-        r.write('Success rate: ' + str(success_rate) + '%')
+        r.write('Success rate: ' + str(success_rate) + '%\n')
+        if execution_time is not None:
+            r.write('Total execution time (s): ' + str(execution_time) + '\n')
 
 def to_gpu():
     try:
@@ -59,8 +64,7 @@ def plot_acc_loss(history, name, output_dir):
     axis1.legend(loc='lower right')
 
     axis2.plot(history.history["loss"], label='Train', linewidth=3)
-    axis2.plot(history.
-history["val_loss"], label='Validation', linewidth=3)
+    axis2.plot(history.history["val_loss"], label='Validation', linewidth=3)
     axis2.set_title('Model loss', fontsize=16, color="white")
     axis2.set_ylabel('loss')
     axis2.set_xlabel('epoch')
@@ -77,6 +81,22 @@ def sample_with_temp(preds, sampling_temp):
     streched_probs = np.exp(streched) / np.sum(np.exp(streched))
 
     return np.random.choice(range(len(streched)), p=streched_probs)
+
+# Nucleus (top-p) sampling helper
+def nucleus_sample(probs, p=0.9):
+    # probs: numpy array of probabilities
+    sorted_idx = np.argsort(probs)[::-1]
+    sorted_probs = probs[sorted_idx]
+    cumulative = np.cumsum(sorted_probs)
+    # keep tokens until cumulative probability > p
+    cutoff = cumulative <= p
+    # ensure at least one token
+    kept = sorted_idx[cutoff]
+    if kept.size == 0:
+        kept = sorted_idx[:1]
+    top_probs = probs[kept]
+    top_probs = top_probs / top_probs.sum()
+    return np.random.choice(kept, p=top_probs)
 
 
 def compute_tanimoto_init(specific_set):
@@ -133,28 +153,49 @@ def compute_properties(smi):
 
     return smi, sa, qed, mw, logp, tpsa, nhd, nha
 
-def apply_thresholds(df_gen_props, property_thresholds, mw=None, ta_direction='<'):
+def apply_thresholds(df_gen_props, property_thresholds, mw=None, ta_direction=None):
     '''
     '''
-    
-    df_gen_props_t = df_gen_props[df_gen_props['QED'] >= property_thresholds[0]]
-    print('  - Compounds after QED:', len(df_gen_props_t))
-    df_gen_props_t = df_gen_props_t[df_gen_props_t['SAscore'] <= property_thresholds[1]]
-    print('  - Compounds after SAscore:', len(df_gen_props_t))
-    if ta_direction == '<':
-        df_gen_props_t = df_gen_props_t[df_gen_props_t['tan_max'] <= property_thresholds[2]]
-    elif ta_direction == '>':
-        # if ta threshold value (or higher) is inside the sims list, keep the molecule
-        df_gen_props_t = df_gen_props_t[df_gen_props_t['sims'].apply(lambda x: any(i >= property_thresholds[2] for i in x))]
+
+    df_gen_props_t = df_gen_props.copy()
+
+    qed_t, sascore_t, tanimoto_t = property_thresholds
+
+    if qed_t is not None:
+        df_gen_props_t = df_gen_props_t[df_gen_props_t['QED'] >= qed_t]
+        print('  - Compounds after QED:', len(df_gen_props_t))
     else:
-        raise ValueError('Indicate the ta_direction: < or >')
-    print('  - Compounds after tanimoto:', len(df_gen_props_t))
+        print('  - Skipping QED filter (disabled).')
+
+    if sascore_t is not None:
+        df_gen_props_t = df_gen_props_t[df_gen_props_t['SAscore'] <= sascore_t]
+        print('  - Compounds after SAscore:', len(df_gen_props_t))
+    else:
+        print('  - Skipping SAscore filter (disabled).')
+
+    if tanimoto_t is not None:
+        if ta_direction == '<':
+            df_gen_props_t = df_gen_props_t[df_gen_props_t['tan_max'] <= tanimoto_t]
+        elif ta_direction == '>':
+            df_gen_props_t = df_gen_props_t[df_gen_props_t['sims'].apply(lambda x: any(i >= tanimoto_t for i in x))]
+        else:
+            raise ValueError('Indicate the ta_direction: < or >')
+        print('  - Compounds after tanimoto:', len(df_gen_props_t))
+    else:
+        print('  - Skipping tanimoto filter (disabled).')
+
     if mw:
         df_gen_props_t = df_gen_props_t[(df_gen_props_t['mw'] >= mw[0]) & (df_gen_props_t['mw'] <= mw[1])]
-    print('  - Compounds after mw filter:', len(df_gen_props_t))
-    
-    df_gen_props_t = df_gen_props_t[['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'tan_mean', 'tan_max']]
-    return df_gen_props_t
+        print('  - Compounds after mw filter:', len(df_gen_props_t))
+    else:
+        print('  - Skipping mw filter (disabled).')
+
+    selected_cols = ['smiles', 'SAscore', 'QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA']
+    for optional_col in ['tan_mean', 'tan_max']:
+        if optional_col in df_gen_props_t.columns:
+            selected_cols.append(optional_col)
+
+    return df_gen_props_t[selected_cols]
 
 def histogram_properties(df_initial, df_generated, property, out_dir):
     '''
@@ -426,6 +467,91 @@ def filter_REOS(mol):
         return None
     else:
         return mol
+
+def is_trifurcated(
+    mol,
+    min_branch_size=3,
+    exclude_rings=True
+    ):
+    """
+    Returns the mol object if it contains a valid trifurcation center,
+    otherwise returns None.
+
+    Parameters
+    ----------
+    mol : RDKit Mol
+        Molecule to analyze.
+    min_branch_size : int
+        Minimum branch size (including branch-start).
+    exclude_rings : bool
+        Whether to ignore trifurcations where the center is in a ring.
+    """
+    # SMARTS pattern for trifurcation (heavy atom connected to 3 branching atoms)
+    TRIFURCATION_SMARTS = "[*;!H0]([$([*])])([$([*])])([$([*])])"
+    TRIFURCATION_PATTERN = Chem.MolFromSmarts(TRIFURCATION_SMARTS)
+
+    if mol is None:
+        return None
+
+    matches = mol.GetSubstructMatches(TRIFURCATION_PATTERN)
+    if not matches:
+        return None
+
+    # DFS helper function to count branch size
+    def count_branch_atoms(mol, start_idx, forbidden):
+        visited = set(forbidden)
+        stack = [start_idx]
+        visited.add(start_idx)
+        count = 0
+
+        while stack:
+            idx = stack.pop()
+            count += 1
+            atom = mol.GetAtomWithIdx(idx)
+            for nbr in atom.GetNeighbors():
+                nidx = nbr.GetIdx()
+                if nidx not in visited:
+                    visited.add(nidx)
+                    stack.append(nidx)
+
+        return count
+
+    # Evaluate each match
+    for match in matches:
+        center_idx = match[0]
+        branch_idxs = match[1:]
+        center_atom = mol.GetAtomWithIdx(center_idx)
+
+        # Skip rings if required
+        if exclude_rings and center_atom.IsInRing():
+            continue
+
+        # Center must have at least 3 heavy neighbors
+        heavy_neighbors = [
+            a for a in center_atom.GetNeighbors()
+            if a.GetAtomicNum() != 1
+        ]
+        if len(heavy_neighbors) < 3:
+            continue
+
+        # Branches must be distinct
+        if len(set(branch_idxs)) != 3:
+            continue
+
+        # Check branches independently
+        valid = True
+        for i, bidx in enumerate(branch_idxs):
+            forbidden = {center_idx} | set(branch_idxs[:i] + branch_idxs[i+1:])
+            size = count_branch_atoms(mol, bidx, forbidden)
+
+            if size < min_branch_size:
+                valid = False
+                break
+
+        if valid:
+            return mol  # It IS trifurcated
+
+    return None  # No valid trifurcation found
 
 def apply_structural_filters(df):
     """Apply structural filters of unwanted ring substructures"""
