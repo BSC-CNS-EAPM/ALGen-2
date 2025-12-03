@@ -16,7 +16,8 @@ from data.data_processing import length_scanner, load_data, one_hot_encoder, \
 from models.generative_models import lstm_model, generate, generate_batch
 from utils.utils import apply_thresholds, selfies_one_hot_encoder, \
     smiles2selfies, write_report, plot_acc_loss, compute_properties, histogram_properties, tanimoto2, \
-    compute_tanimoto_init, filter_unique_molecules, apply_structural_filters, apply_unwanted_substruct_filters
+    compute_tanimoto_init, filter_unique_molecules, apply_structural_filters, apply_unwanted_substruct_filters, \
+    apply_trifurcated_filter
 
 import random
 import argparse as ap
@@ -67,6 +68,7 @@ def parseArg():
     parser.add_argument("-mw", "--molecular_weight", required=False, nargs=2, type=float, metavar=('MIN', 'MAX'), help="filter of molecular weight range, e.g. --mw 20 500")
     parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
     parser.add_argument("-skip_catalog_filter", "--skip_catalog_filter", default=False, help="Skip PAINS/Brenk/NIH/CHEMBL substructure filter step (True/False).")
+    parser.add_argument("-trifurcated_filter", "--trifurcated_filter", required=False, type=int, help="Apply trifurcated substructure filter, indicating the min branch size if it is applied (False or int).")
     
     args = parser.parse_args()
     
@@ -113,6 +115,7 @@ def parseArg():
     top_p = None if args.disable_top_p else args.top_p
     if top_p is not None and not 0 < top_p <= 1:
         parser.error("--top_p must be in the interval (0, 1].")
+    trifurcated = args.trifurcated_filter
     
     # Define default variables for not required arguments
     if args.sampling_temperature:
@@ -128,7 +131,7 @@ def parseArg():
 
     return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, top_p, quantity, \
     name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset,\
-    mw, skip_third_filter, restart
+    mw, skip_third_filter, trifurcated, restart
 
 
 def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
@@ -440,7 +443,7 @@ def main():
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, top_p, quant, name, outdir,\
     specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, mw, skip_third_filter,\
-    restart = parseArg()
+    trifurcated, restart = parseArg()
     
     # Print relevant information to log
     print('PARAMETERS:')
@@ -464,6 +467,7 @@ def main():
     print('  - Subset optimizer:', subset)
     print('  - Molecular weight:', mw)      
     print('  - Skip third filter (PAINS/Brenk/NIH/CHEMBL):', skip_third_filter)
+    print('  - Trifurcated filter:', 'disabled' if not trifurcated else f'enabled (min branch size: {trifurcated})')
     print('\n')
     
     # Generate the output directory
@@ -656,6 +660,15 @@ def main():
         
         if len(df_filtered)==0:
             raise Exception("No valid compounds generated after the last filter.")
+        
+        # Apply additional filter if indicated: Trifurcated substructure filter
+        print('ADDITIONAL FILTERS:')
+        if trifurcated:
+            df_filtered = apply_trifurcated_filter(df_filtered, min_branch_size=trifurcated)
+            print(f'  - Compounds after trifurcated filter (min branch size {trifurcated}): ', len(df_filtered))
+        
+        if len(df_filtered)==0:
+            raise Exception("No valid compounds generated after the trifurcated filter.")
         
         timef = time.time() - timef0
         print('Time Filters Chemical AL: ', timef, 'seconds')

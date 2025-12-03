@@ -591,3 +591,13 @@ def apply_unwanted_substruct_filters(df):
     df.dropna(subset=['mols'], inplace=True)
 
     return df
+
+def apply_trifurcated_filter(df, min_branch_size=3, exclude_rings=True):
+    """Apply trifurcated center filter"""
+
+    df['mols'] = df['smiles'].apply(lambda smile: Chem.MolFromSmiles(smile) if pd.notna(smile) else None)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(lambda mol: is_trifurcated(mol, min_branch_size, exclude_rings))
+    df.dropna(subset=['mols'], inplace=True)
+
+    return df
