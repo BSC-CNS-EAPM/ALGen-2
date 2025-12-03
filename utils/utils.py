@@ -344,6 +344,98 @@ def filter_3_more_fused_rings(mol):
     else:
         return mol
 
+def filter_3_more_fused_or_partitioned_rings(mol):
+    """
+    Keep the molecule (return mol) unless any fused ring system
+    has 3 or more independent cycles (true tricyclic or higher).
+    This function removes composite/perimeter rings before analysis.
+    """
+    from itertools import combinations
+
+    ring_info = mol.GetRingInfo()
+    raw_rings = [set(r) for r in ring_info.AtomRings()]
+    if not raw_rings:
+        return mol
+
+    # --- 1) Remove composite/perimeter rings that are exactly the union of two smaller rings
+    rings = list(raw_rings)
+    is_composite = [False] * len(rings)
+    for r_idx, R in enumerate(rings):
+        for a_idx, b_idx in combinations(range(len(rings)), 2):
+            if a_idx == r_idx or b_idx == r_idx:
+                continue
+            A = rings[a_idx]
+            B = rings[b_idx]
+            # only consider strictly-smaller contributors
+            if len(A) >= len(R) or len(B) >= len(R):
+                continue
+            if len(A & B) >= 2 and (A | B) == R:
+                is_composite[r_idx] = True
+                break
+    filtered_rings = [rings[i] for i in range(len(rings)) if not is_composite[i]]
+    if not filtered_rings:
+        filtered_rings = rings  # fallback
+
+    # --- 2) Build fused ring adjacency (rings fused if they share >=2 atoms)
+    fused_graph = {i: set() for i in range(len(filtered_rings))}
+    for i, r1 in enumerate(filtered_rings):
+        for j, r2 in enumerate(filtered_rings):
+            if i < j and len(r1 & r2) > 1:
+                fused_graph[i].add(j)
+                fused_graph[j].add(i)
+
+    # --- 3) Find connected components of the fused-ring graph
+    visited = set()
+    components = []
+    for i in fused_graph:
+        if i not in visited:
+            stack = [i]
+            comp = set()
+            while stack:
+                n = stack.pop()
+                if n not in visited:
+                    visited.add(n)
+                    comp.add(n)
+                    stack.extend(fused_graph[n])
+            components.append(comp)
+
+    # --- 4) For each fused component compute the cycle rank (true independent cycles)
+    # If any component has cycle_rank >= 3, reject molecule.
+    for comp in components:
+        union_atoms = set().union(*[filtered_rings[i] for i in comp])
+
+        # Count edges in the induced subgraph over union_atoms
+        edges = set()
+        for bond in mol.GetBonds():
+            a = bond.GetBeginAtomIdx(); b = bond.GetEndAtomIdx()
+            if a in union_atoms and b in union_atoms:
+                edges.add(tuple(sorted((a, b))))
+        V = len(union_atoms)
+        E = len(edges)
+
+        # compute connected components count C of the induced subgraph (usually 1)
+        adj = {a: set() for a in union_atoms}
+        for a, b in edges:
+            adj[a].add(b); adj[b].add(a)
+        visited_atoms = set()
+        C = 0
+        for node in adj:
+            if node not in visited_atoms:
+                C += 1
+                stack = [node]
+                while stack:
+                    n = stack.pop()
+                    if n not in visited_atoms:
+                        visited_atoms.add(n)
+                        stack.extend(adj[n] - visited_atoms)
+
+        cycle_rank = E - V + C
+        if cycle_rank >= 3:
+            return None
+
+    # If we got here, no fused component has >=3 independent cycles -> keep
+    return mol
+
 def filter_3_4_rings_fused(mol):
     """Filter the molecules that have 3 or 4-atom rings fused with other rings"""
     rings = mol.GetRingInfo().AtomRings()
@@ -559,7 +651,7 @@ def apply_structural_filters(df):
     df.dropna(subset=['mols'], inplace=True)  
     df['mols'] = df['mols'].apply(filter_rings_8_atoms)
     df.dropna(subset=['mols'], inplace=True)
-    df['mols'] = df['mols'].apply(filter_3_more_fused_rings)
+    df['mols'] = df['mols'].apply(filter_3_more_fused_or_partitioned_rings)
     df.dropna(subset=['mols'], inplace=True)
     df['mols'] = df['mols'].apply(filter_3_4_rings_fused)
     df.dropna(subset=['mols'], inplace=True)
