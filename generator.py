@@ -46,12 +46,12 @@ def parseArg():
 
     parser = ap.ArgumentParser()
 
-    parser.add_argument("-g", "--general_set_smiles", required=True, type=str, help="path to smiles file.")
-    parser.add_argument("-e", "--epochs", required=True, type=int, help="number of epochs.")
-    parser.add_argument("-v", "--validation_size", required=True, type=float, help="validation set size.")
-    parser.add_argument("-t", "--test_size", required=True, type=float, help="test set size.")
-    parser.add_argument("-b", "--batch_size", required=True, type=int, help="batch size.")
-    parser.add_argument("-s", "--sampling_temperature", required=False, type=float, help="sampling temperature.")
+    parser.add_argument("-g", "--general_set_smiles", required=True, type=str, help="path to general set of smiles file.")
+    parser.add_argument("-e", "--epochs", required=True, type=int, default=100, help="number of epochs (default: 100).")
+    parser.add_argument("-v", "--validation_size", required=True, type=float, default=0.1, help="validation set size (default: 0.1).")
+    parser.add_argument("-t", "--test_size", required=True, type=float, default=0.1, help="test set size (default: 0.1).")
+    parser.add_argument("-b", "--batch_size", required=True, type=int, default=100, help="batch size for general training (default: 100).")
+    parser.add_argument("-s", "--sampling_temperature", required=False, type=float, default=1.2, help="sampling temperature (default: 1.2).")
     parser.add_argument("-q", "--quantity", required=True, type=int, help="target amount defined by --quantity-mode (valid molecules or total attempts).")
     parser.add_argument("-n", "--name", required=True, type=str, help="name of generative run.")
     parser.add_argument("-o", "--outdir", required=True, type=str, help="output directory.")
@@ -61,7 +61,7 @@ def parseArg():
     parser.add_argument("-qed", "--druglikeness", required=False, type=float, help="threshold for qed value of generated molecules.")
     parser.add_argument("-sa", "--sascore", required=False, type=float, help="threshold for sascore value of generated molecules.")
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
-    parser.add_argument("-tad", "--ta_direction", required=False, type=str, help="direction of the tanimoto threshold filter. Options: <, >")
+    parser.add_argument("-tad", "--ta_direction", required=False, type=str, default='<', choices=['<', '>'], help="direction of the tanimoto threshold filter (default: '<').")
     parser.add_argument("-tp", "--top_p", required=False, type=float, help="nucleus (top-p) sampling cutoff (0-1)")
     parser.add_argument("--disable_top_p", action="store_true", help="disable nucleus sampling and rely solely on temperature sampling.")
     parser.add_argument("-sub", "--subset_optimizer", required=False, type=str, help="if optimizer, try the subset where to compute tanimoto similarity.")
@@ -99,11 +99,13 @@ def parseArg():
     val_size = args.validation_size
     test_size = args.test_size
     batch_size = args.batch_size
+    sampling_temperature = args.sampling_temperature
     quantity = args.quantity
     name = args.name
     outdir = args.outdir
     specific_smiles = args.specific_set_smiles
     weights = args.pretrained
+    inner_al = args.inner_al
     qed_t = args.druglikeness
     sascore_t = args.sascore
     tanimoto_t = args.tanimoto
@@ -116,18 +118,6 @@ def parseArg():
     if top_p is not None and not 0 < top_p <= 1:
         parser.error("--top_p must be in the interval (0, 1].")
     trifurcated = args.trifurcated_filter
-    
-    # Define default variables for not required arguments
-    if args.sampling_temperature:
-        sampling_temperature = args.sampling_temperature
-    else:
-        # If we do not provide a sampling temperature, generate a random one from 0.1 to 1.5
-        sampling_temperature = random.uniform(0.1, 1.5)
-        
-    if args.inner_al:
-        inner_al = args.inner_al
-    else:
-        inner_al = 1
 
     return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, top_p, quantity, \
     name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset,\

@@ -4,7 +4,8 @@
 
 - 🔬 **Substructural molecular filtering as a first inner Active Learning (AL) step:**  
   Incorporates substructural molecular filters that remove unwanted motifs before applying molecular property filters.
-  These substructural filters include: XXX
+
+  These substructural filters removes: molecules with any ring equal or greater than 8 atoms, molecules with 3 or more fused rings, molecules with 3/4-atom rings fused with another ring, molecules with 4-atom rings that have more than 2 substitutions, molecules with more than 2 7-membered rings, molecules with consecutive nitrogens in a rings, molecules with more than 4 quiral centers, other manual added SMARTS patterns.
 
 - ⚖️ **Molecular weight added to molecular properties filter:**  
   In addition to Tanimoto similarity, QED, and SA, a **molecular weight range filter** has been added, allowing users to define both minimum and maximum MW limits.
@@ -16,7 +17,9 @@
   The regular mode (`"<"`) continues to filter molecules **below** the maximum tanimoto threshold. This mode is useful for promoting diversity/variability.
 
 - 📦 **Catalog filter integration in inner AL:**  
-  Users can now enable RDKit **catalog filters** as an optional third filtering stage in the inner AL cycle. These catalogs are: XXX
+  Users can now enable RDKit **catalog filters** as an optional third filtering stage in the inner AL cycle.
+  
+  These catalogs are: PAINS, Brenk, NIH, CHEMBL
 
 - 🎯 **Subset-based similarity filtering (optional):**  
   Tanimoto similarity can now be computed against a **user-defined subset** instead of the specific set, enabling guided molecule generation toward user specific chemotypes.
