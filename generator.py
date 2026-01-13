@@ -81,6 +81,7 @@ def parseArg():
     parser.add_argument("-trifurcated_filter", "--trifurcated_filter", required=False, type=int, help="Apply trifurcated substructure filter, indicating the min branch size if it is applied (False or int).")
     parser.add_argument("-acf", "--apply_catalog_filter", action="store_true", help="Run the PAINS/Brenk/NIH/CHEMBL substructure filter step (skipped by default).")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible training/generation. Omit to allow stochastic runs.")
+    parser.add_argument("--scale", type=float, default=0.5, help="Latent space noise scale factor for generation (default: 0.5). Lower = more valid/less diverse; higher = more diverse/more invalid.")
     
     args = parser.parse_args()
 
@@ -137,9 +138,27 @@ def parseArg():
     return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, top_p, quantity, \
     name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset,\
     mw, skip_third_filter, trifurcated, restart, args.seed
+    
+    # Define default variables for not required arguments
+    if args.sampling_temperature:
+        sampling_temperature = args.sampling_temperature
+    else:
+        # Default to 1.0 (neutral scaling) if not provided
+        sampling_temperature = 1.0
+
+    if args.inner_al:
+        inner_al = args.inner_al
+    else:
+        inner_al = 1
+
+    trifurcated = args.trifurcated_filter
+
+    return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, top_p, quantity, \
+    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, \
+    mw, skip_third_filter, trifurcated, restart, args.seed, args.scale
 
 
-def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
+def split_data(dat, validation_size, test_size, maximum_len, char_alph=None, random_state=None):
     '''
     Args:
     - dat: The input data to be split
@@ -147,6 +166,7 @@ def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
     - test_size: The proportion of the data to be used for testing
     - maximum_len: Max length
     - char_alph: List of the unique characters found in a SMILE.
+    - random_state: Random seed for reproducible splits. If None, splits will be random.
 
     Operations:
     - Split the dataset into training, validation and test sets.
@@ -157,8 +177,8 @@ def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
     '''
 
     # Split the dataset into train, test and validation
-    pre_train, validation = train_test_split(dat, test_size=validation_size, random_state=42)
-    train, test = train_test_split(pre_train, test_size=test_size, random_state=42)
+    pre_train, validation = train_test_split(dat, test_size=validation_size, random_state=random_state)
+    train, test = train_test_split(pre_train, test_size=test_size, random_state=random_state)
     
     print('train: ' , type(train))
     print("\nTraining set size: ", train.shape[0])
@@ -381,12 +401,13 @@ def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_in
 
     return df_gen_props
 
-def model_vae(model, size, test_pred):
+def model_vae(model, size, test_pred, scale=0.5):
     '''
     Args:
         model (tf.keras.Model): The VAE model from which components will be extracted.
         size (int): The size of the vocabulary.
         test_pred (numpy.ndarray): The test data used to predict the latent space representations.
+        scale (float): The scale factor for latent space noise (default: 0.5).
 
     Operations:
         1. Extract the encoder part of the VAE model.
@@ -395,7 +416,7 @@ def model_vae(model, size, test_pred):
         4. Copy weights from the original VAE model to the decoder model.
         5. Predict the latent space representation for the test data.
         6. Randomly select a latent space vector as the seed for sequence generation.
-        7. Set a scale factor for sequence generation.
+        7. Use the provided scale factor for sequence generation.
 
     Returns:
         gen_model (tf.keras.Model): The decoder model for sequence generation.
@@ -429,8 +450,6 @@ def model_vae(model, size, test_pred):
     rand_seed = random.randrange(test_latent_space.shape[0])
     latent_seed = test_latent_space[rand_seed:rand_seed + 1]
 
-    scale = 0.5
-
     return gen_model, latent_to_states_model, latent_seed, scale
 
 def main():
@@ -448,7 +467,11 @@ def main():
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, top_p, quant, name, outdir,\
     specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, mw, skip_third_filter,\
+<<<<<<< HEAD
     trifurcated, restart, seed_value = parseArg()
+=======
+    restart, seed_value, scale_value = parseArg()
+>>>>>>> 0e6c048 (Update generator and utils logic)
     
     # Print relevant information to log
     print('PARAMETERS:')
@@ -463,6 +486,7 @@ def main():
     print('  - Batch size:', batch_size)
     print('  - Sampling Temperature:', sampling_temp)
     print('  - Top-p (nucleus) sampling:', 'disabled' if top_p is None else top_p)
+    print('  - Latent noise scale:', scale_value)
     print('  - Quantity:', quant)
     print('  - Seed:', seed_value)
     print('  - Inner Active Learning Cycles:', inner_al)
@@ -507,7 +531,8 @@ def main():
     max_generation_len = int(max_len)
 
     # Split the general training dataset into train, test and validation one-hot-encoded
-    train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_general, val_size, test_size, max_len)
+    # Use fixed split seed (42) for fair comparisons across different training seeds
+    train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_general, val_size, test_size, max_len, random_state=42)
     
     # Store original data sizes for reporting
     original_train_size = train.shape[0]
@@ -556,7 +581,8 @@ def main():
         df_init_props = computing_properties_spec_set(data_specific, inner_output_dir+'_'+str(i), name)
         
         # Split the specific training set into train, test and validation one-hot-encoded
-        train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_specific, val_size, test_size, max_len)
+        # Use fixed split seed (42) for fair comparisons across different training seeds
+        train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_specific, val_size, test_size, max_len, random_state=42)
         n_vocab = len(smiles_to_int)
         
         print(f'\nROUND {i}')
@@ -581,7 +607,7 @@ def main():
         
         model.save_weights(inner_output_dir+'_'+str(i) + '/' + name + '_weights.hdf5')
         
-        gen_model, latent_to_states_model, latent_seed, scale = model_vae(model, len(int_to_smiles), test_x)
+        gen_model, latent_to_states_model, latent_seed, scale = model_vae(model, len(int_to_smiles), test_x, scale=scale_value)
 
         # Evaluate the model
         score, acc = model.evaluate([test_x, test_x], test_y, batch_size=batch_size, verbose=0)
@@ -624,7 +650,7 @@ def main():
         write_report(train_size=original_train_size, val_size=original_val_size, test_size=original_test_size, test_loss=score,
             test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, top_p=top_p, quantity_requested=quant,
             valid_generated=valid_generated, total_attempts=total_attempts,
-            not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i))
+            not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i), seed=seed_value)
         
         timef0 = time.time()
 
@@ -714,7 +740,7 @@ def main():
                      test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, top_p=top_p,
                      quantity_requested=quant, valid_generated=valid_generated,
                      total_attempts=total_attempts, not_valid=not_valid, name=name, outdir=final_report_dir,
-                     execution_time=time_total)
+                     execution_time=time_total, seed=seed_value)
 
 if __name__ == "__main__":
     # try:

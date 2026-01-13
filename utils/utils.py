@@ -18,7 +18,7 @@ import deepsmiles as ds
 from collections import Counter
 
 
-def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, batch_size, sampling_temp, top_p, quantity_requested, valid_generated, total_attempts, not_valid, name, outdir, execution_time=None):
+def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, batch_size, sampling_temp, top_p, quantity_requested, valid_generated, total_attempts, not_valid, name, outdir, execution_time=None, seed=None):
     with open(outdir + "/report_" + name + '.out', 'w+') as r:
         r.write('#######################################\n')
         r.write('Report for generative run ' + name + '\n')
@@ -27,6 +27,7 @@ def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, b
         r.write('Chosen batch size: ' + str(batch_size)+ '\n')
         r.write('Sampling temperature: ' + str(sampling_temp)+ '\n')
         r.write('Top-p (nucleus) sampling: ' + str(top_p)+ '\n')
+        r.write('Random seed: ' + str(seed if seed is not None else 'Not set')+ '\n')
         r.write('Quantity requested: ' + str(quantity_requested) + '\n')
         r.write('#######################################'+ '\n')
         r.write('Train size: ' + str(train_size)+ '\n')
