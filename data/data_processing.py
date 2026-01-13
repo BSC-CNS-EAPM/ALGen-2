@@ -44,6 +44,7 @@ def length_scanner(file):
     num_char = 2 * np.median(lengths)
 
     print("Mean length: ", np.mean(lengths))
+    print("Max generation length (2 * median length): ", 2 * np.median(lengths))
     print("Most common length: ", np.median(lengths))
 
     return num_char

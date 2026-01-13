@@ -43,7 +43,7 @@ def lstm_model(X, y):
     return model
 
 
-def sample_smiles(gen_model, latent_to_states_model, latent, n_vocab, sampling_temp, top_p=None):
+def sample_smiles(gen_model, latent_to_states_model, latent, n_vocab, sampling_temp, top_p=None, max_len=None):
 
     states = latent_to_states_model.predict(latent.reshape(1, -1))
     gen_model.layers[1].reset_states(states=[states[0], states[1]])
@@ -53,7 +53,7 @@ def sample_smiles(gen_model, latent_to_states_model, latent, n_vocab, sampling_t
     samplevec[0,0,startidx] = 1
     sequence = ""
 
-    for i in range(n_vocab):
+    for _ in range(max_len):
         preds = gen_model.predict_on_batch(samplevec)[0][-1]
         if top_p is not None:
             sampleidx = nucleus_sample(preds, p=top_p)
@@ -70,7 +70,7 @@ def sample_smiles(gen_model, latent_to_states_model, latent, n_vocab, sampling_t
             break
     return sequence
 
-def sample_sequences(gen_model, latent_to_states_model, latent, n_vocab, sampling_temp):
+def sample_sequences(gen_model, latent_to_states_model, latent, n_vocab, sampling_temp, max_len=None):
 
     states = latent_to_states_model.predict(latent)
     gen_model.layers[1].reset_states(states=[states[0], states[1]])
@@ -80,7 +80,7 @@ def sample_sequences(gen_model, latent_to_states_model, latent, n_vocab, samplin
     samplevec[0,0,startidx] = 1
     sequence = ""
 
-    for i in range(n_vocab):
+    for _ in range(max_len):
         preds = gen_model.predict(samplevec)[0][-1]
         if sampling_temp == 1.0:
           sampleidx = np.argmax(preds)
@@ -95,14 +95,14 @@ def sample_sequences(gen_model, latent_to_states_model, latent, n_vocab, samplin
             break
     return sequence
 
-def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, top_p=None, protein=None):
+def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, top_p=None, protein=None, max_len=None):
 
     samples, mols = [], []
     not_valid = 0
 
     for i in range(quant):
         latent_vec = latent_seed + scale*(np.random.randn(latent_seed.shape[1]))
-        out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, top_p)
+        out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, top_p, max_len=max_len)
         if not protein:
           mol = Chem.MolFromSmiles(out)
 
@@ -113,7 +113,7 @@ def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vo
             not_valid += 1
           
         else:
-            out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
+            out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, max_len=max_len)
             samples.append(out)
 
         # clear the memory every 100 iterations
@@ -124,7 +124,7 @@ def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vo
 
     return mols, samples, not_valid
   
-def generate_batch(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, batch_size=128, top_p=None, protein=None):
+def generate_batch(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vocab, scale, quant, batch_size=128, top_p=None, protein=None, attempt_recorder=None, max_len=None):
     samples, mols = [], []
     total_attempts = 0
 
@@ -143,14 +143,21 @@ def generate_batch(gen_model, latent_to_states_model, latent_seed, sampling_temp
         for latent_vec, state in zip(latent_vecs, states):
             total_attempts += 1
             if protein:
-                out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp)
+                out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, max_len=max_len)
                 samples.append(out)
+                if attempt_recorder is not None:
+                    attempt_recorder.append({'smiles': out, 'valid': True})
             else:
-                out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, top_p)
+                out = sample_smiles(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, top_p, max_len=max_len)
                 mol = Chem.MolFromSmiles(out)
                 if mol:
                     mols.append(mol)
                     samples.append(out)
+                    is_valid = True
+                else:
+                    is_valid = False
+                if attempt_recorder is not None:
+                    attempt_recorder.append({'smiles': out, 'valid': is_valid})
 
     clear_session()
     tf.keras.backend.clear_session()

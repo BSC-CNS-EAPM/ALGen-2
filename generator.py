@@ -1,5 +1,6 @@
 import os
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # shrink TensorFlow logger verbosity
+os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")  # ask TensorFlow for deterministic GPU kernels when possible
 
 import pdb
 from re import L
@@ -20,6 +21,7 @@ from utils.utils import apply_thresholds, selfies_one_hot_encoder, \
     apply_trifurcated_filter
 
 import random
+import numpy as np
 import argparse as ap
 import pandas as pd
 import glob
@@ -35,9 +37,18 @@ from tensorflow.keras.optimizers.schedules import CosineDecayRestarts
 RDLogger.DisableLog('rdApp.warning')
 RDLogger.DisableLog('rdApp.error')
 
-SEED = 22
-os.environ['PYTHONHASHSEED'] = str(SEED)
-random.seed(SEED)
+try:
+    tf.config.experimental.enable_op_determinism()
+except Exception:
+    # Fallback if the TensorFlow build does not expose deterministic kernels
+    pass
+
+
+def configure_seeds(seed_value: int) -> None:
+    os.environ['PYTHONHASHSEED'] = str(seed_value)
+    random.seed(seed_value)
+    np.random.seed(seed_value)
+    tf.random.set_seed(seed_value)
 
 def parseArg():
     '''
@@ -67,10 +78,14 @@ def parseArg():
     parser.add_argument("-sub", "--subset_optimizer", required=False, type=str, help="if optimizer, try the subset where to compute tanimoto similarity.")
     parser.add_argument("-mw", "--molecular_weight", required=False, nargs=2, type=float, metavar=('MIN', 'MAX'), help="filter of molecular weight range, e.g. --mw 20 500")
     parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
-    parser.add_argument("-skip_catalog_filter", "--skip_catalog_filter", default=False, help="Skip PAINS/Brenk/NIH/CHEMBL substructure filter step (True/False).")
     parser.add_argument("-trifurcated_filter", "--trifurcated_filter", required=False, type=int, help="Apply trifurcated substructure filter, indicating the min branch size if it is applied (False or int).")
+    parser.add_argument("-acf", "--apply_catalog_filter", action="store_true", help="Run the PAINS/Brenk/NIH/CHEMBL substructure filter step (skipped by default).")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible training/generation. Omit to allow stochastic runs.")
     
     args = parser.parse_args()
+
+    if args.seed is not None:
+        configure_seeds(args.seed)
     
     # If inner active learning, thresholds for druglikeness, sascore, and tanimoto are required
     if args.inner_al and not all([args.druglikeness, args.sascore, args.tanimoto]):
@@ -113,7 +128,7 @@ def parseArg():
     subset = args.subset_optimizer
     mw = args.molecular_weight
     restart = args.restart
-    skip_third_filter = args.skip_catalog_filter
+    skip_third_filter = not args.apply_catalog_filter
     top_p = None if args.disable_top_p else args.top_p
     if top_p is not None and not 0 < top_p <= 1:
         parser.error("--top_p must be in the interval (0, 1].")
@@ -121,7 +136,7 @@ def parseArg():
 
     return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, top_p, quantity, \
     name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset,\
-    mw, skip_third_filter, trifurcated, restart
+    mw, skip_third_filter, trifurcated, restart, args.seed
 
 
 def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
@@ -151,7 +166,7 @@ def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
     print("Test set size: ", test.shape[0])
     print("Number of possible characters: ", len(int_to_smiles))
 
-    # One-hot-encoding. The resulting object is a 3D Tensor (Number of SMILES x Length of SMILES x Number of characters in a SMILE)
+    # One-hot-encoding. The resulting object is a 3D Tensor (Number of SMILES x Length of SMILES x Number of characters in a SMILE) len(smiles_to_int)
     train_pred, train_target = one_hot_encoder(smiles=train, max_len=maximum_len, num_char=len(smiles_to_int))
     val_pred, val_target = one_hot_encoder(smiles=validation,  max_len=maximum_len, num_char=len(smiles_to_int))
     test_pred, test_target = one_hot_encoder(smiles=test,  max_len=maximum_len, num_char=len(smiles_to_int))
@@ -433,7 +448,7 @@ def main():
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, top_p, quant, name, outdir,\
     specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, mw, skip_third_filter,\
-    trifurcated, restart = parseArg()
+    trifurcated, restart, seed_value = parseArg()
     
     # Print relevant information to log
     print('PARAMETERS:')
@@ -449,6 +464,7 @@ def main():
     print('  - Sampling Temperature:', sampling_temp)
     print('  - Top-p (nucleus) sampling:', 'disabled' if top_p is None else top_p)
     print('  - Quantity:', quant)
+    print('  - Seed:', seed_value)
     print('  - Inner Active Learning Cycles:', inner_al)
     print('  - QED threshold:', qed_t)
     print('  - SAscore threshold:', sascore_t)
@@ -488,6 +504,7 @@ def main():
 
     # Number of characters in SMILES (==50)
     n_vocab = len(smiles_to_int)
+    max_generation_len = int(max_len)
 
     # Split the general training dataset into train, test and validation one-hot-encoded
     train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_general, val_size, test_size, max_len)
@@ -577,18 +594,19 @@ def main():
         
         # Generate new compounds with nucleus (top-p) sampling until N valids
         timeg0 = time.time()
+        attempt_records = []
         t_mols, t_smiles, not_valid, total_attempts = generate_batch(
             gen_model, latent_to_states_model, latent_seed,
             sampling_temp=sampling_temp, n_vocab=n_vocab,
             scale=scale, quant=quant,
-            batch_size=batch_size, top_p=top_p
+            batch_size=batch_size, top_p=top_p,
+            attempt_recorder=attempt_records,
+            max_len=max_generation_len
         )
-        # # provisional to test the filters
-        # smiles_file = open('/gpfs/projects/bsc72/julia/ALGen_runnings/test_time/affinityAL/smiles5.smi', 'r')
-        # t_smiles = [x for x in smiles_file]
-        # print(t_smiles)
-        # t_mols = [Chem.MolFromSmiles(x) for x in t_smiles]
-        # print(t_mols)
+
+        attempts_path = inner_output_dir + '_' + str(i) + '/' + name + f'_generated_smiles_all_attempts_round_{i}.csv'
+        pd.DataFrame(attempt_records).to_csv(attempts_path, index=False)
+        print(f"All generation attempts written to {attempts_path}")
 
         print('GENERATED COMPOUNDS')
         print(len(t_smiles))
