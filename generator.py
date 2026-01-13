@@ -133,11 +133,6 @@ def parseArg():
     top_p = None if args.disable_top_p else args.top_p
     if top_p is not None and not 0 < top_p <= 1:
         parser.error("--top_p must be in the interval (0, 1].")
-    trifurcated = args.trifurcated_filter
-
-    return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, top_p, quantity, \
-    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset,\
-    mw, skip_third_filter, trifurcated, restart, args.seed
     
     # Define default variables for not required arguments
     if args.sampling_temperature:
@@ -467,11 +462,8 @@ def main():
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, top_p, quant, name, outdir,\
     specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, mw, skip_third_filter,\
-<<<<<<< HEAD
-    trifurcated, restart, seed_value = parseArg()
-=======
-    restart, seed_value, scale_value = parseArg()
->>>>>>> 0e6c048 (Update generator and utils logic)
+    trifurcated,restart, seed_value, scale_value = parseArg()
+
     
     # Print relevant information to log
     print('PARAMETERS:')
