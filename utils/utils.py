@@ -18,34 +18,99 @@ import deepsmiles as ds
 from collections import Counter
 
 
-def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, batch_size, sampling_temp, top_p, quantity_requested, valid_generated, total_attempts, not_valid, name, outdir, execution_time=None, seed=None):
+def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, batch_size, sampling_temp, top_p, 
+                 quantity_requested, valid_generated, total_attempts, not_valid, name, outdir, 
+                 execution_time=None, seed=None, weights_file=None, val_size_param=None, test_size_param=None,
+                 qed_threshold=None, sascore_threshold=None, tanimoto_threshold=None, ta_direction=None, 
+                 subset=None, mw=None, skip_third_filter=None, trifurcated=None, restart=None, 
+                 scale=None, gen_seed=None, inner_al=None, round_num=None, general_smiles=None, specific_smiles=None):
     with open(outdir + "/report_" + name + '.out', 'w+') as r:
         r.write('#######################################\n')
         r.write('Report for generative run ' + name + '\n')
         r.write('#######################################\n')
-        r.write('Model trained for: ' + str(epochs)+ ' epoch' + '\n')
+        
+        # Input data
+        if general_smiles is not None:
+            r.write('General training set file: ' + str(general_smiles) + '\n')
+        if specific_smiles is not None:
+            r.write('Specific training set file: ' + str(specific_smiles) + '\n')
+        if weights_file is not None:
+            r.write('Pretrained weights file: ' + str(weights_file) + '\n')
+        r.write('#######################################\n')
+        
+        # Training parameters
+        r.write('Model trained for: ' + str(epochs)+ ' epoch(s)\n')
         r.write('Chosen batch size: ' + str(batch_size)+ '\n')
+        if val_size_param is not None:
+            r.write('Validation split: ' + str(val_size_param) + '\n')
+        if test_size_param is not None:
+            r.write('Test split: ' + str(test_size_param) + '\n')
+        r.write('#######################################\n')
+        
+        # Generation parameters
         r.write('Sampling temperature: ' + str(sampling_temp)+ '\n')
-        r.write('Top-p (nucleus) sampling: ' + str(top_p)+ '\n')
+        r.write('Top-p (nucleus) sampling: ' + str(top_p if top_p is not None else 'Disabled')+ '\n')
+        if scale is not None:
+            r.write('Latent noise scale: ' + str(scale) + '\n')
         r.write('Random seed: ' + str(seed if seed is not None else 'Not set')+ '\n')
+        if gen_seed is not None:
+            r.write('Generation seed: ' + str(gen_seed) + '\n')
         r.write('Quantity requested: ' + str(quantity_requested) + '\n')
-        r.write('#######################################'+ '\n')
+        r.write('#######################################\n')
+        
+        # Active learning parameters
+        if inner_al is not None:
+            r.write('Inner AL cycles: ' + str(inner_al) + '\n')
+        if round_num is not None:
+            r.write('Current round: ' + str(round_num) + '\n')
+        if restart is not None:
+            r.write('Restart mode: ' + str(restart) + '\n')
+        
+        # Filter thresholds
+        if qed_threshold is not None:
+            r.write('QED threshold: ' + str(qed_threshold) + '\n')
+        if sascore_threshold is not None:
+            r.write('SAscore threshold: ' + str(sascore_threshold) + '\n')
+        if tanimoto_threshold is not None:
+            r.write('Tanimoto threshold: ' + str(tanimoto_threshold) + '\n')
+        if ta_direction is not None:
+            r.write('Tanimoto direction: ' + str(ta_direction) + '\n')
+        if subset is not None:
+            r.write('Subset optimizer: ' + str(subset) + '\n')
+        if mw is not None:
+            r.write('Molecular weight range: ' + str(mw[0]) + '-' + str(mw[1]) + '\n')
+        if skip_third_filter is not None:
+            r.write('Skip PAINS/Brenk/NIH/CHEMBL filter: ' + str(skip_third_filter) + '\n')
+        if trifurcated is not None:
+            r.write('Trifurcated filter (min branch size): ' + str(trifurcated) + '\n')
+        r.write('#######################################\n')
+        
+        # Dataset sizes
         r.write('Train size: ' + str(train_size)+ '\n')
         r.write('Validation size: ' + str(val_size)+ '\n')
         r.write('Test size: ' + str(test_size)+ '\n')
-        r.write('#######################################'+ '\n')
+        r.write('#######################################\n')
+        
+        # Model performance
         r.write('Test loss: ' + str(test_loss)+ '\n')
         r.write('Test accuracy: ' + str(test_acc)+ '\n')
-        r.write('#######################################'+ '\n')
-        r.write('Tried to generate ' + str(total_attempts) + ' compounds and ' + str(not_valid) + ' were not valid'+ '\n')
+        r.write('#######################################\n')
+        
+        # Generation results
+        r.write('Tried to generate ' + str(total_attempts) + ' compounds and ' + str(not_valid) + ' were not valid\n')
         r.write('Valid molecules generated: ' + str(valid_generated) + '\n')
         if total_attempts > 0:
             success_rate = (float(valid_generated) / float(total_attempts)) * 100
         else:
             success_rate = 0.0
         r.write('Success rate: ' + str(success_rate) + '%\n')
+        r.write('#######################################\n')
+        
+        # Execution time
         if execution_time is not None:
             r.write('Total execution time (s): ' + str(execution_time) + '\n')
+            import time
+            r.write('Total execution time (human): ' + time.strftime("%H:%M:%S", time.gmtime(execution_time)) + '\n')
 
 def to_gpu():
     try:
@@ -313,13 +378,21 @@ def filter_unique_molecules(df1, df2, threshold=1):
 
 def filter_rings_8_atoms(mol):
     """Filter the molecules that have rings with 8 or more atoms"""
-    rings = mol.GetRingInfo().AtomRings()
-    #print(mol.GetRingInfo().NumRings())
-    for ring in rings:        
-        if len(ring) >= 8:
-            print('Ring with 8 or more atoms found on molecule with SMILES:', Chem.MolToSmiles(mol))
-            return None
-    return mol
+    try:
+        rings = mol.GetRingInfo().AtomRings()
+        #print(mol.GetRingInfo().NumRings())
+        for ring in rings:        
+            if len(ring) >= 8:
+                try:
+                    smiles = Chem.MolToSmiles(mol)
+                    print('Ring with 8 or more atoms found on molecule with SMILES:', smiles)
+                except RuntimeError as e:
+                    print(f'Invalid molecule structure (could not generate SMILES): {e}')
+                return None
+        return mol
+    except RuntimeError as e:
+        print(f'Error processing molecule ring info: {e}')
+        return None
 
 def filter_3_more_fused_rings(mol):
     """Filter the molecules that have 3 or more fused rings"""
