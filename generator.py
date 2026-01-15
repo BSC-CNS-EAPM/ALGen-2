@@ -12,7 +12,7 @@ from data.data_processing import length_scanner, load_data, one_hot_encoder, \
     Data_Generator, int_to_smiles, seq_cleaning, smiles_to_int, smiles_cleaning, \
     amino_to_int, protein_one_hot_encoder
 from models.generative_models import lstm_model, generate, generate_batch
-from utils.utils_mod import apply_thresholds, selfies_one_hot_encoder, \
+from utils.utils import apply_thresholds, selfies_one_hot_encoder, \
     smiles2selfies, write_report, plot_acc_loss, compute_properties, histogram_properties, tanimoto2, \
     compute_tanimoto_init, filter_unique_molecules, apply_structural_filters, apply_unwanted_substruct_filters, \
     apply_trifurcated_filter
