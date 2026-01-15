@@ -134,18 +134,6 @@ def parseArg():
     if top_p is not None and not 0 < top_p <= 1:
         parser.error("--top_p must be in the interval (0, 1].")
     
-    # Define default variables for not required arguments
-    if args.sampling_temperature:
-        sampling_temperature = args.sampling_temperature
-    else:
-        # Default to 1.0 (neutral scaling) if not provided
-        sampling_temperature = 1.0
-
-    if args.inner_al:
-        inner_al = args.inner_al
-    else:
-        inner_al = 1
-
     trifurcated = args.trifurcated_filter
 
     return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, top_p, quantity, \
