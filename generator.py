@@ -1,9 +1,6 @@
 import os
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")  # shrink TensorFlow logger verbosity
 os.environ.setdefault("TF_DETERMINISTIC_OPS", "1")  # ask TensorFlow for deterministic GPU kernels when possible
-
-import pdb
-from re import L
 import tensorflow as tf
 from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import ModelCheckpoint
@@ -15,7 +12,7 @@ from data.data_processing import length_scanner, load_data, one_hot_encoder, \
     Data_Generator, int_to_smiles, seq_cleaning, smiles_to_int, smiles_cleaning, \
     amino_to_int, protein_one_hot_encoder
 from models.generative_models import lstm_model, generate, generate_batch
-from utils.utils import apply_thresholds, selfies_one_hot_encoder, \
+from utils.utils_mod import apply_thresholds, selfies_one_hot_encoder, \
     smiles2selfies, write_report, plot_acc_loss, compute_properties, histogram_properties, tanimoto2, \
     compute_tanimoto_init, filter_unique_molecules, apply_structural_filters, apply_unwanted_substruct_filters, \
     apply_trifurcated_filter
@@ -50,6 +47,11 @@ def configure_seeds(seed_value: int) -> None:
     np.random.seed(seed_value)
     tf.random.set_seed(seed_value)
 
+def configure_generation_seeds(gen_seed: int) -> None:
+    """Seed only the RNGs used during generation (latent noise + nucleus sampling + latent_seed choice)."""
+    random.seed(gen_seed)
+    np.random.seed(gen_seed)
+
 def parseArg():
     '''
     Parse all the parameters
@@ -58,10 +60,10 @@ def parseArg():
     parser = ap.ArgumentParser()
 
     parser.add_argument("-g", "--general_set_smiles", required=True, type=str, help="path to general set of smiles file.")
-    parser.add_argument("-e", "--epochs", required=True, type=int, default=100, help="number of epochs (default: 100).")
-    parser.add_argument("-v", "--validation_size", required=True, type=float, default=0.1, help="validation set size (default: 0.1).")
-    parser.add_argument("-t", "--test_size", required=True, type=float, default=0.1, help="test set size (default: 0.1).")
-    parser.add_argument("-b", "--batch_size", required=True, type=int, default=100, help="batch size for general training (default: 100).")
+    parser.add_argument("-e", "--epochs", required=False, type=int, default=100, help="number of epochs (default: 100).")
+    parser.add_argument("-v", "--validation_size", required=False, type=float, default=0.1, help="validation set size (default: 0.1).")
+    parser.add_argument("-t", "--test_size", required=False, type=float, default=0.1, help="test set size (default: 0.1).")
+    parser.add_argument("-b", "--batch_size", required=False, type=int, default=100, help="batch size for general training (default: 100).")
     parser.add_argument("-s", "--sampling_temperature", required=False, type=float, default=1.2, help="sampling temperature (default: 1.2).")
     parser.add_argument("-q", "--quantity", required=True, type=int, help="target amount defined by --quantity-mode (valid molecules or total attempts).")
     parser.add_argument("-n", "--name", required=True, type=str, help="name of generative run.")
@@ -73,15 +75,16 @@ def parseArg():
     parser.add_argument("-sa", "--sascore", required=False, type=float, help="threshold for sascore value of generated molecules.")
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
     parser.add_argument("-tad", "--ta_direction", required=False, type=str, default='<', choices=['<', '>'], help="direction of the tanimoto threshold filter (default: '<').")
-    parser.add_argument("-tp", "--top_p", required=False, type=float, help="nucleus (top-p) sampling cutoff (0-1)")
-    parser.add_argument("--disable_top_p", action="store_true", help="disable nucleus sampling and rely solely on temperature sampling.")
-    parser.add_argument("-sub", "--subset_optimizer", required=False, type=str, help="if optimizer, try the subset where to compute tanimoto similarity.")
+    parser.add_argument("-tp", "--top_p", required=False, type=float, default=None, help="(optional) nucleus (top-p) sampling cutoff (0-1). Omit to disable nucleus sampling.")
+    parser.add_argument("-sub", "--subset_optimizer", required=False, type=str, help="(optional) if optimizer, try the subset where to compute tanimoto similarity.")
     parser.add_argument("-mw", "--molecular_weight", required=False, nargs=2, type=float, metavar=('MIN', 'MAX'), help="filter of molecular weight range, e.g. --mw 20 500")
     parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
     parser.add_argument("-trifurcated_filter", "--trifurcated_filter", required=False, type=int, help="Apply trifurcated substructure filter, indicating the min branch size if it is applied (False or int).")
-    parser.add_argument("-acf", "--apply_catalog_filter", action="store_true", help="Run the PAINS/Brenk/NIH/CHEMBL substructure filter step (skipped by default).")
-    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible training/generation. Omit to allow stochastic runs.")
-    
+    parser.add_argument("-acf", "--apply_catalog_filter", required=False, action="store_true", help="Run the PAINS/Brenk/NIH/CHEMBL substructure filter step (skipped by default).")
+    parser.add_argument("--seed", required=False, type=int, default=None, help="Random seed for reproducible training/generation. Omit to allow stochastic runs.")
+    parser.add_argument("--scale", required=False, type=float, default=0.5, help="Latent space noise scale factor for generation (default: 0.5). Lower = more valid/less diverse; higher = more diverse/more invalid.")
+    parser.add_argument("--gen_seed", required=False, type=int, default=None, help="Seed for generation only (latent noise + nucleus sampling). If set, it overrides RNG state right before generation while keeping training reproducible.")
+
     args = parser.parse_args()
 
     if args.seed is not None:
@@ -129,17 +132,30 @@ def parseArg():
     mw = args.molecular_weight
     restart = args.restart
     skip_third_filter = not args.apply_catalog_filter
-    top_p = None if args.disable_top_p else args.top_p
+    top_p = args.top_p
     if top_p is not None and not 0 < top_p <= 1:
         parser.error("--top_p must be in the interval (0, 1].")
+    
+    # Define default variables for not required arguments
+    if args.sampling_temperature:
+        sampling_temperature = args.sampling_temperature
+    else:
+        # Default to 1.0 (neutral scaling) if not provided
+        sampling_temperature = 1.0
+
+    if args.inner_al:
+        inner_al = args.inner_al
+    else:
+        inner_al = 1
+
     trifurcated = args.trifurcated_filter
 
     return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, top_p, quantity, \
-    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset,\
-    mw, skip_third_filter, trifurcated, restart, args.seed
+    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, \
+    mw, skip_third_filter, trifurcated, restart, args.seed, args.scale, args.gen_seed
 
 
-def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
+def split_data(dat, validation_size, test_size, maximum_len, char_alph=None, random_state=None):
     '''
     Args:
     - dat: The input data to be split
@@ -147,6 +163,7 @@ def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
     - test_size: The proportion of the data to be used for testing
     - maximum_len: Max length
     - char_alph: List of the unique characters found in a SMILE.
+    - random_state: Random seed for reproducible splits. If None, splits will be random.
 
     Operations:
     - Split the dataset into training, validation and test sets.
@@ -157,8 +174,8 @@ def split_data(dat, validation_size, test_size, maximum_len, char_alph=None):
     '''
 
     # Split the dataset into train, test and validation
-    pre_train, validation = train_test_split(dat, test_size=validation_size, random_state=42)
-    train, test = train_test_split(pre_train, test_size=test_size, random_state=42)
+    pre_train, validation = train_test_split(dat, test_size=validation_size, random_state=random_state)
+    train, test = train_test_split(pre_train, test_size=test_size, random_state=random_state)
     
     print('train: ' , type(train))
     print("\nTraining set size: ", train.shape[0])
@@ -204,12 +221,6 @@ def train_and_evaluate_model(model, train_pred, train_target, val_pred, val_targ
     steps_per_epoch = len(train_pred) // b_size
 
     # Generate a learning rate schedule
-    # lr_schedule = tf.keras.optimizers.schedules.InverseTimeDecay(
-    #     initial_learning_rate=1e-3,           
-    #     decay_steps=steps_per_epoch * 50,
-    #     decay_rate=0.5,
-    #     staircase=True
-    # )
     lr_schedule = CosineDecayRestarts(
         initial_learning_rate=1e-3,
         first_decay_steps=steps_per_epoch * 100,
@@ -381,12 +392,13 @@ def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_in
 
     return df_gen_props
 
-def model_vae(model, size, test_pred):
+def model_vae(model, size, test_pred, scale=0.5):
     '''
     Args:
         model (tf.keras.Model): The VAE model from which components will be extracted.
         size (int): The size of the vocabulary.
         test_pred (numpy.ndarray): The test data used to predict the latent space representations.
+        scale (float): The scale factor for latent space noise (default: 0.5).
 
     Operations:
         1. Extract the encoder part of the VAE model.
@@ -395,7 +407,7 @@ def model_vae(model, size, test_pred):
         4. Copy weights from the original VAE model to the decoder model.
         5. Predict the latent space representation for the test data.
         6. Randomly select a latent space vector as the seed for sequence generation.
-        7. Set a scale factor for sequence generation.
+        7. Use the provided scale factor for sequence generation.
 
     Returns:
         gen_model (tf.keras.Model): The decoder model for sequence generation.
@@ -429,8 +441,6 @@ def model_vae(model, size, test_pred):
     rand_seed = random.randrange(test_latent_space.shape[0])
     latent_seed = test_latent_space[rand_seed:rand_seed + 1]
 
-    scale = 0.5
-
     return gen_model, latent_to_states_model, latent_seed, scale
 
 def main():
@@ -448,7 +458,8 @@ def main():
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, top_p, quant, name, outdir,\
     specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, mw, skip_third_filter,\
-    trifurcated, restart, seed_value = parseArg()
+    trifurcated,restart, seed_value, scale_value, gen_seed = parseArg()
+
     
     # Print relevant information to log
     print('PARAMETERS:')
@@ -463,8 +474,10 @@ def main():
     print('  - Batch size:', batch_size)
     print('  - Sampling Temperature:', sampling_temp)
     print('  - Top-p (nucleus) sampling:', 'disabled' if top_p is None else top_p)
+    print('  - Latent noise scale:', scale_value)
     print('  - Quantity:', quant)
     print('  - Seed:', seed_value)
+    print('  - Generation seed:', gen_seed)
     print('  - Inner Active Learning Cycles:', inner_al)
     print('  - QED threshold:', qed_t)
     print('  - SAscore threshold:', sascore_t)
@@ -507,7 +520,8 @@ def main():
     max_generation_len = int(max_len)
 
     # Split the general training dataset into train, test and validation one-hot-encoded
-    train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_general, val_size, test_size, max_len)
+    # Use fixed split seed (42) for fair comparisons across different training seeds
+    train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_general, val_size, test_size, max_len, random_state=42)
     
     # Store original data sizes for reporting
     original_train_size = train.shape[0]
@@ -556,7 +570,8 @@ def main():
         df_init_props = computing_properties_spec_set(data_specific, inner_output_dir+'_'+str(i), name)
         
         # Split the specific training set into train, test and validation one-hot-encoded
-        train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_specific, val_size, test_size, max_len)
+        # Use fixed split seed (42) for fair comparisons across different training seeds
+        train, validation, test, train_x, train_y, val_x, val_y, test_x, test_y = split_data(data_specific, val_size, test_size, max_len, random_state=42)
         n_vocab = len(smiles_to_int)
         
         print(f'\nROUND {i}')
@@ -580,8 +595,15 @@ def main():
         print(f'Test alternative accuracy: {acc}')
         
         model.save_weights(inner_output_dir+'_'+str(i) + '/' + name + '_weights.hdf5')
+
+        # set generation-only seeds right before building latent seed + sampling
+        # so we can vary libraries without changing training determinism.
+        if gen_seed is not None:
+            # If you do multiple AL rounds in one run, offset by round index so each round differs deterministically.
+            configure_generation_seeds(gen_seed + i)
+            print(f"  - Applied generation RNG seed: {gen_seed + i}")
         
-        gen_model, latent_to_states_model, latent_seed, scale = model_vae(model, len(int_to_smiles), test_x)
+        gen_model, latent_to_states_model, latent_seed, scale = model_vae(model, len(int_to_smiles), test_x, scale=scale_value)
 
         # Evaluate the model
         score, acc = model.evaluate([test_x, test_x], test_y, batch_size=batch_size, verbose=0)
@@ -621,10 +643,16 @@ def main():
         valid_generated = len(t_mols)
         print(f"Collected {valid_generated} valid molecules (attempts={total_attempts}).")
 
-        write_report(train_size=original_train_size, val_size=original_val_size, test_size=original_test_size, test_loss=score,
-            test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, top_p=top_p, quantity_requested=quant,
+        write_report(train_size=original_train_size, val_size=original_val_size, test_size=original_test_size, 
+            test_loss=score, test_acc=acc, epochs=num_epochs, batch_size=batch_size, 
+            sampling_temp=sampling_temp, top_p=top_p, quantity_requested=quant,
             valid_generated=valid_generated, total_attempts=total_attempts,
-            not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i))
+            not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i), seed=seed_value,
+            weights_file=weights_file,
+            val_size_param=val_size, test_size_param=test_size, qed_threshold=qed_t, sascore_threshold=sascore_t, 
+            tanimoto_threshold=tanimoto_t, ta_direction=ta_direction, subset=subset, mw=mw, 
+            skip_third_filter=skip_third_filter, trifurcated=trifurcated, restart=restart, 
+            scale=scale_value, gen_seed=gen_seed, inner_al=inner_al, round_num=i)
         
         timef0 = time.time()
 
@@ -710,15 +738,17 @@ def main():
     # Persist execution time in the final report directory
     final_report_dir = inner_output_dir + '_' + str(inner_al)
     if os.path.exists(final_report_dir):
-        write_report(train_size=original_train_size, val_size=original_val_size, test_size=original_test_size, test_loss=score,
-                     test_acc=acc, epochs=num_epochs, batch_size=batch_size, sampling_temp=sampling_temp, top_p=top_p,
-                     quantity_requested=quant, valid_generated=valid_generated,
-                     total_attempts=total_attempts, not_valid=not_valid, name=name, outdir=final_report_dir,
-                     execution_time=time_total)
+        write_report(train_size=original_train_size, val_size=original_val_size, test_size=original_test_size, 
+            test_loss=score, test_acc=acc, epochs=num_epochs, batch_size=batch_size, 
+            sampling_temp=sampling_temp, top_p=top_p, quantity_requested=quant,
+            valid_generated=valid_generated, total_attempts=total_attempts,
+            not_valid=not_valid, name=name, outdir=final_report_dir,
+            execution_time=time_total, seed=seed_value,
+            weights_file=weights_file,
+            val_size_param=val_size, test_size_param=test_size, qed_threshold=qed_t, sascore_threshold=sascore_t, 
+            tanimoto_threshold=tanimoto_t, ta_direction=ta_direction, subset=subset, mw=mw, 
+            skip_third_filter=skip_third_filter, trifurcated=trifurcated, restart=restart, 
+            scale=scale_value, gen_seed=gen_seed, inner_al=inner_al, round_num=inner_al)
 
 if __name__ == "__main__":
-    # try:
-    #     main()
-    # except Exception as e:
-    #     print("Shutting down with error: ", e) 
     main()

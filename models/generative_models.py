@@ -55,12 +55,18 @@ def sample_smiles(gen_model, latent_to_states_model, latent, n_vocab, sampling_t
 
     for _ in range(max_len):
         preds = gen_model.predict_on_batch(samplevec)[0][-1]
+        
+        # Apply temperature scaling first (if not 1.0)
+        if sampling_temp != 1.0:
+            preds = np.power(preds, 1.0 / sampling_temp)
+            preds = preds / np.sum(preds)  # re-normalize
+        
+        # Then apply nucleus sampling or greedy sampling
         if top_p is not None:
             sampleidx = nucleus_sample(preds, p=top_p)
-        elif sampling_temp == 1.0:
-            sampleidx = np.argmax(preds)
         else:
-            sampleidx = sample_with_temp(preds, sampling_temp)
+            sampleidx = np.argmax(preds)
+        
         samplechar = int_to_smiles[str(sampleidx)]
         if samplechar != "E":
             sequence += samplechar
@@ -70,7 +76,7 @@ def sample_smiles(gen_model, latent_to_states_model, latent, n_vocab, sampling_t
             break
     return sequence
 
-def sample_sequences(gen_model, latent_to_states_model, latent, n_vocab, sampling_temp, max_len=None):
+def sample_sequences(gen_model, latent_to_states_model, latent, n_vocab, sampling_temp, top_p=None, max_len=None):
 
     states = latent_to_states_model.predict(latent)
     gen_model.layers[1].reset_states(states=[states[0], states[1]])
@@ -82,10 +88,18 @@ def sample_sequences(gen_model, latent_to_states_model, latent, n_vocab, samplin
 
     for _ in range(max_len):
         preds = gen_model.predict(samplevec)[0][-1]
-        if sampling_temp == 1.0:
-          sampleidx = np.argmax(preds)
+        
+        # Apply temperature scaling first (if not 1.0)
+        if sampling_temp != 1.0:
+            preds = np.power(preds, 1.0 / sampling_temp)
+            preds = preds / np.sum(preds)  # re-normalize
+        
+        # Then apply nucleus sampling or greedy sampling
+        if top_p is not None:
+            sampleidx = nucleus_sample(preds, p=top_p)
         else:
-          sampleidx = sample_with_temp(preds, sampling_temp)
+            sampleidx = np.argmax(preds)
+        
         samplechar = int_to_amino[str(sampleidx)]
         if samplechar != "E":
             sequence += samplechar
@@ -113,7 +127,7 @@ def generate(gen_model, latent_to_states_model, latent_seed, sampling_temp, n_vo
             not_valid += 1
           
         else:
-            out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, max_len=max_len)
+            out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, top_p, max_len=max_len)
             samples.append(out)
 
         # clear the memory every 100 iterations
@@ -143,7 +157,7 @@ def generate_batch(gen_model, latent_to_states_model, latent_seed, sampling_temp
         for latent_vec, state in zip(latent_vecs, states):
             total_attempts += 1
             if protein:
-                out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, max_len=max_len)
+                out = sample_sequences(gen_model, latent_to_states_model, latent_vec, n_vocab, sampling_temp, top_p, max_len=max_len)
                 samples.append(out)
                 if attempt_recorder is not None:
                     attempt_recorder.append({'smiles': out, 'valid': True})
