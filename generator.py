@@ -450,7 +450,7 @@ def main():
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, top_p, quant, name, outdir,\
     specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, mw, skip_third_filter,\
-    trifurcated,restart, seed_value, scale_value = parseArg()
+    trifurcated, restart, seed_value, scale_value = parseArg()
 
     
     # Print relevant information to log
