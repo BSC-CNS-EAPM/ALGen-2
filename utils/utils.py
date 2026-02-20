@@ -203,14 +203,22 @@ def tanimoto2(compound, specific_set_fps, ta_direction):
     else:
         raise ValueError('Indicate the ta_direction: < or >')
 
-def compute_properties(smi):
+def compute_properties(smi, qed_weights=None):
     '''
     '''
     print('smiles: ', smi)
     mol = Chem.MolFromSmiles(smi)
 
     sa = sascorer.calculateScore(mol)
-    qed = round(QED.weights_max(mol), 2)
+    
+    if qed_weights is not None:
+        # Custom QED with specified weights.
+        # The default mean weights are: 0.66, 0.46, 0.05, 0.61, 0.06, 0.65, 0.48, 0.95 (MW, logP, HBD, HBA, PSA, RotB, AROM, ALARMS).
+        qed = round(QED.qed(mol, qed_weights), 2) 
+    else:
+        # Default max weights
+        qed = round(QED.weights_max(mol), 2)
+        
     mw = Descriptors.ExactMolWt(mol)
     logp = round(Descriptors.MolLogP(mol), 2)
     tpsa = round(Descriptors.TPSA(mol), 2)
