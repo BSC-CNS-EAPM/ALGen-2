@@ -84,6 +84,7 @@ def parseArg():
     parser.add_argument("--seed", required=False, type=int, default=None, help="Random seed for reproducible training/generation. Omit to allow stochastic runs.")
     parser.add_argument("--scale", required=False, type=float, default=0.5, help="Latent space noise scale factor for generation (default: 0.5). Lower = more valid/less diverse; higher = more diverse/more invalid.")
     parser.add_argument("--gen_seed", required=False, type=int, default=None, help="Seed for generation only (latent noise + nucleus sampling). If set, it overrides RNG state right before generation while keeping training reproducible.")
+    parser.add_argument("--qed_weights", required=False, nargs=8, type=float, default=None, help="(Optional) List of 8 floats between 0 and 1 representing the weights for each of the 8 properties contributing to the QED score, in the following order: [MW, AlogP, HBD, HBA, PSA, RotB, Arom, Alert]. If not provided, default max weights will be used.")
 
     args = parser.parse_args()
 
@@ -152,7 +153,7 @@ def parseArg():
 
     return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, top_p, quantity, \
     name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, \
-    mw, skip_third_filter, trifurcated, restart, args.seed, args.scale, args.gen_seed
+    mw, skip_third_filter, trifurcated, restart, args.seed, args.scale, args.gen_seed, args.qed_weights
 
 
 def split_data(dat, validation_size, test_size, maximum_len, char_alph=None, random_state=None):
@@ -289,7 +290,7 @@ def train_and_evaluate_model(model, train_pred, train_target, val_pred, val_targ
     return score, acc
 
 
-def computing_properties_spec_set(dat, output_dir, name):
+def computing_properties_spec_set(dat, output_dir, name, qed_weights=None):
     '''
     Args:
     - dat: Specific set with the compounds
@@ -310,7 +311,7 @@ def computing_properties_spec_set(dat, output_dir, name):
     # Compute the properties of each compound
     for comp in tqdm(dat.tolist()):
         try:
-            smi, sa, qed, mw, logp, tpsa, nhd, nha = compute_properties(comp)
+            smi, sa, qed, mw, logp, tpsa, nhd, nha = compute_properties(comp, qed_weights=qed_weights)
             data_init.append([smi, sa, qed, mw, logp, tpsa, nhd, nha])
         except:
             pass # if not valid compound
@@ -322,7 +323,7 @@ def computing_properties_spec_set(dat, output_dir, name):
     return df_init_props
 
 
-def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_init_props, mom, ta_direction):
+def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_init_props, mom, ta_direction, qed_weights=None):
     '''
     Args:
     - smiles: Generated compounds + specific training set 
@@ -354,7 +355,7 @@ def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_in
     # Compute properties of the general set 
     for comp in tqdm(t_smiles):
         try:
-            smi, sa, qed, mw, logp, tpsa, nhd, nha = compute_properties(comp)
+            smi, sa, qed, mw, logp, tpsa, nhd, nha = compute_properties(comp, qed_weights=qed_weights)
 
             if mom == 'initial' or 'restart':
                 if ta_direction == '<':
@@ -458,7 +459,7 @@ def main():
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, top_p, quant, name, outdir,\
     specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, mw, skip_third_filter,\
-    trifurcated,restart, seed_value, scale_value, gen_seed = parseArg()
+    trifurcated,restart, seed_value, scale_value, gen_seed, qed_weights = parseArg()
 
     
     # Print relevant information to log
@@ -487,6 +488,7 @@ def main():
     print('  - Molecular weight:', mw)      
     print('  - Skip third filter (PAINS/Brenk/NIH/CHEMBL):', skip_third_filter)
     print('  - Trifurcated filter:', 'disabled' if not trifurcated else f'enabled (min branch size: {trifurcated})')
+    print('  - QED weights:', 'default' if qed_weights is None else qed_weights)
     print('\n')
     
     # Generate the output directory
@@ -567,7 +569,7 @@ def main():
         print('Smiles_cleaning: ', len(data_specific))
         
         # Compute properties of the specific training set
-        df_init_props = computing_properties_spec_set(data_specific, inner_output_dir+'_'+str(i), name)
+        df_init_props = computing_properties_spec_set(data_specific, inner_output_dir+'_'+str(i), name, qed_weights=qed_weights)
         
         # Split the specific training set into train, test and validation one-hot-encoded
         # Use fixed split seed (42) for fair comparisons across different training seeds
@@ -668,12 +670,12 @@ def main():
         
         # Compute properties of the generated compounds
         if ta_direction == '<':
-            df_gen_props = computing_properties_generated_set(specific_smiles, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction)
+            df_gen_props = computing_properties_generated_set(specific_smiles, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction, qed_weights=qed_weights)
         elif ta_direction == '>':
             if subset:
-                df_gen_props = computing_properties_generated_set(subset, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction)
+                df_gen_props = computing_properties_generated_set(subset, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction, qed_weights=qed_weights)
             else:
-                df_gen_props = computing_properties_generated_set(initial_specific, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction)
+                df_gen_props = computing_properties_generated_set(initial_specific, t_smiles, inner_output_dir+'_'+str(i), name, df_init_props, 'initial', ta_direction, qed_weights=qed_weights)
         else:
             raise ValueError('Indicate the ta_direction: < or >')
     
