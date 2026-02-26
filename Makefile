@@ -16,4 +16,4 @@ clean:
 
 uninstall:
 	@echo "❌ Uninstalling package..."
-	conda activate ALGen && pip uninstall -y ALGen
+	pip uninstall -y ALGen-2
