@@ -36,9 +36,9 @@ For further technical details and results please refer to the [paper](#citation)
 
 
 ## Table of Contents
-- [Introduction](#algen-1) 🚀
+- [Introduction](#algen-2) 🚀
 - [New Features](#new-features) ⚡
-- [Installation](#getting-started) 🛠️
+- [Installation](#installation) 🛠️
 - [Usage](#usage) 🧪
 - [Configuration](#configuration) ⚙️
 - [Examples](#examples) 💡
