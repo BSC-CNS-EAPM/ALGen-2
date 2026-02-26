@@ -89,8 +89,8 @@ For further technical details and results please refer to the [paper](#citation)
 - 🌿 **Trifurcated molecule filter (optional):**  
   Optionally detect and select **trifurcated structures**, with configurable minimum branch counts, for specialized design workflows.
 
-- **High molecular weight filter implementation:**
-  TO DO
+- 🧬 **(FUTURE IMPLEMENTATION) High molecular weight filter:**  
+  Planned option to exclude molecules above a user-defined molecular weight threshold during filtering, helping to avoid overly large or unwieldy candidate structures.
 
 - 🧱 **(FUTURE IMPLEMENTATION) Scaffold-level similarity filtering:**  
   Future versions may compute Tanimoto similarity based on **scaffolds rather than full molecules**, enabling greater scaffold diversity during generation.
