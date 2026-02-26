@@ -211,11 +211,10 @@ Below is a list of configurable parameters and their purpose:
 | `-r`, `--restart` | Flag to restart a previously interrupted run from the last checkpoint. | *False* |
 | `-trifurcated_filter`, `--trifurcated_filter` | Apply trifurcated substructure filter, indicating the min branch size if it is applied (False or int). | *Optional* |
 | `-acf`, `--apply_catalog_filter` | Run the PAINS/Brenk/NIH/CHEMBL substructure filter step (skipped by default). | *Optional* |
+| `--qed_weights` | Custom QED component weights as 8 floats: `[MW, ALOGP, HBA, HBD, PSA, ROTB, AROM, ALERTS]`. Overrides the default QED weights. | *Optional* |
 | `--seed` | Random seed for reproducible training/generation. Omit to allow stochastic runs. | *Optional* |
 | `--scale` | Latent space noise scale factor for generation. | 0.5 |
 | `--gen_seed` | Seed for generation only (latent noise + nucleus sampling). | *Optional* |
-
-
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## Examples
