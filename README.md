@@ -309,7 +309,7 @@ This work has also been used in the following scientific works:
 
 > Vilalta-Mor, J., et al. (2025). Active Learning-Guided Seq2Seq Variational Autoencoder for Multi-target Inhibitor Generation. https://arxiv.org/abs/2506.15309
 
-Stay tunned for more publications!
+Stay tuned for more publications!
 
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
