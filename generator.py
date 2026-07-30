@@ -15,7 +15,7 @@ from models.generative_models import lstm_model, generate, generate_batch
 from utils.utils import apply_thresholds, selfies_one_hot_encoder, \
     smiles2selfies, write_report, plot_acc_loss, compute_properties, histogram_properties, tanimoto2, \
     compute_tanimoto_init, filter_unique_molecules, apply_structural_filters, apply_unwanted_substruct_filters, \
-    apply_trifurcated_filter
+    apply_trifurcated_filter, apply_zwitterion_filter
 
 import random
 import numpy as np
@@ -72,6 +72,7 @@ def parseArg():
     parser.add_argument("-pt", "--pretrained", required=False, type=str, help="restart training from stored weights. Path to weights.")
     parser.add_argument("-ial", "--inner_al", required=False, type=int, help="number of 'al' active learning iterations.")
     parser.add_argument("-qed", "--druglikeness", required=False, type=float, help="threshold for qed value of generated molecules.")
+    parser.add_argument("--ab_mps", required=False, type=float, help="maximum allowed AB-MPS score (bRo5-friendly drug-likeness metric; lower is better).")
     parser.add_argument("-sa", "--sascore", required=False, type=float, help="threshold for sascore value of generated molecules.")
     parser.add_argument("-ta", "--tanimoto", required=False, type=float, help="threshold for tanimoto score of generated molecules.")
     parser.add_argument("-tad", "--ta_direction", required=False, type=str, default='<', choices=['<', '>'], help="direction of the tanimoto threshold filter (default: '<').")
@@ -80,6 +81,10 @@ def parseArg():
     parser.add_argument("-mw", "--molecular_weight", required=False, nargs=2, type=float, metavar=('MIN', 'MAX'), help="filter of molecular weight range, e.g. --mw 20 500")
     parser.add_argument("-r", "--restart", required=False, action="store_true", help="restart job from last stop.")
     parser.add_argument("-trifurcated_filter", "--trifurcated_filter", required=False, type=int, help="Apply trifurcated substructure filter, indicating the min branch size if it is applied (False or int).")
+    parser.add_argument("--zw_min_dist", required=False, type=int, default=None,
+        help="Endpoint zwitterion filter: keep only molecules with an acidic group (COOH/SO3H/PO3H/tetrazole) "
+             "and an aliphatic amine both within 2 bonds of a terminal atom and at least N bonds apart. "
+             "Recommended: 8. Omit to disable.")
     parser.add_argument("-acf", "--apply_catalog_filter", required=False, action="store_true", help="Run the PAINS/Brenk/NIH/CHEMBL substructure filter step (skipped by default).")
     parser.add_argument("--seed", required=False, type=int, default=None, help="Random seed for reproducible training/generation. Omit to allow stochastic runs.")
     parser.add_argument("--scale", required=False, type=float, default=0.5, help="Latent space noise scale factor for generation (default: 0.5). Lower = more valid/less diverse; higher = more diverse/more invalid.")
@@ -91,9 +96,12 @@ def parseArg():
     if args.seed is not None:
         configure_seeds(args.seed)
     
-    # If inner active learning, thresholds for druglikeness, sascore, and tanimoto are required
-    if args.inner_al and not all([args.druglikeness, args.sascore, args.tanimoto]):
-        parser.error("--inner_al requires --druglikeness, --sascore, and --tanimoto.")
+    # If inner active learning, SAscore and tanimoto are required plus at least one drug-likeness metric
+    if args.inner_al and (
+        args.sascore is None or args.tanimoto is None or
+        (args.druglikeness is None and args.ab_mps is None)
+    ):
+        parser.error("--inner_al requires --sascore, --tanimoto, and at least one of --druglikeness or --ab_mps.")
         
     # Choose or restart or pretrained, but not both
     if args.restart and args.pretrained:
@@ -126,6 +134,7 @@ def parseArg():
     weights = args.pretrained
     inner_al = args.inner_al
     qed_t = args.druglikeness
+    ab_mps_t = args.ab_mps
     sascore_t = args.sascore
     tanimoto_t = args.tanimoto
     ta_direction = args.ta_direction
@@ -150,10 +159,11 @@ def parseArg():
         inner_al = 1
 
     trifurcated = args.trifurcated_filter
+    zw_min_dist = args.zw_min_dist
 
     return general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temperature, top_p, quantity, \
-    name, outdir, specific_smiles, weights, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, \
-    mw, skip_third_filter, trifurcated, restart, args.seed, args.scale, args.gen_seed, args.qed_weights
+    name, outdir, specific_smiles, weights, inner_al, qed_t, ab_mps_t, sascore_t, tanimoto_t, ta_direction, subset, \
+    mw, skip_third_filter, trifurcated, zw_min_dist, restart, args.seed, args.scale, args.gen_seed, args.qed_weights
 
 
 def split_data(dat, validation_size, test_size, maximum_len, char_alph=None, random_state=None):
@@ -311,13 +321,13 @@ def computing_properties_spec_set(dat, output_dir, name, qed_weights=None):
     # Compute the properties of each compound
     for comp in tqdm(dat.tolist()):
         try:
-            smi, sa, qed, mw, logp, tpsa, nhd, nha = compute_properties(comp, qed_weights=qed_weights)
-            data_init.append([smi, sa, qed, mw, logp, tpsa, nhd, nha])
+            smi, sa, qed, mw, logp, tpsa, nhd, nha, nrb, nar, ab_mps = compute_properties(comp, qed_weights=qed_weights)
+            data_init.append([smi, sa, qed, mw, logp, tpsa, nhd, nha, nrb, nar, ab_mps])
         except:
             pass # if not valid compound
         
     # Save the properties in a dataframe
-    df_init_props = pd.DataFrame(data_init, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA'])
+    df_init_props = pd.DataFrame(data_init, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'nRB', 'nAR', 'AB_MPS'])
     df_init_props.to_csv(output_dir + '/' + name + '_specific_smiles.csv')
     
     return df_init_props
@@ -355,39 +365,39 @@ def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_in
     # Compute properties of the general set 
     for comp in tqdm(t_smiles):
         try:
-            smi, sa, qed, mw, logp, tpsa, nhd, nha = compute_properties(comp, qed_weights=qed_weights)
+            smi, sa, qed, mw, logp, tpsa, nhd, nha, nrb, nar, ab_mps = compute_properties(comp, qed_weights=qed_weights)
 
-            if mom == 'initial' or 'restart':
+            if mom in ('initial', 'restart'):
                 if ta_direction == '<':
                     tan_mean, tan_max = tanimoto2(comp, smiles_fps, ta_direction)
                     sims = []
-                    data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha, tan_mean, tan_max, sims])
+                    data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha, nrb, nar, ab_mps, tan_mean, tan_max, sims])
                 elif ta_direction == '>':
                     tan_mean, tan_max, sims = tanimoto2(comp, smiles_fps, ta_direction)
-                    data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha, tan_mean, tan_max, sims])
+                    data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha, nrb, nar, ab_mps, tan_mean, tan_max, sims])
                 else:
                     raise ValueError('Indicate the ta_direction: < or >')
 
             else:
-                data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha])
+                data.append([smi, sa, qed, mw, logp, tpsa, nhd, nha, nrb, nar, ab_mps])
 
         except:
             pass
     
     # Save the properties in a dataframe
     if mom == 'initial' or 'restart':
-        df_gen_props = pd.DataFrame(data, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'tan_mean', 'tan_max', 'sims'])
+        df_gen_props = pd.DataFrame(data, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'nRB', 'nAR', 'AB_MPS', 'tan_mean', 'tan_max', 'sims'])
         
         # Generate histograms
         for prop in list(df_gen_props.columns)[1:-3]:
             histogram_properties(df_init_props, df_gen_props, prop, output_dir)
 
     else:
-        df_gen_props = pd.DataFrame(data, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA'])
+        df_gen_props = pd.DataFrame(data, columns=['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'nRB', 'nAR', 'AB_MPS'])
 
 
     # Save the dataframe
-    df_gen_props_simple = df_gen_props[['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'tan_mean', 'tan_max']]
+    df_gen_props_simple = df_gen_props[['smiles', 'SAscore','QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'nRB', 'nAR', 'AB_MPS', 'tan_mean', 'tan_max']]
     df_gen_props_simple.to_csv(output_dir + '/' + name + '_generated_smiles.csv')
     print("\nSmiles written to " + output_dir + '/' + name + '_generated_smiles.csv')
 
@@ -458,8 +468,8 @@ def main():
     
     # Set all variables to the given argument values
     general_smiles, num_epochs, val_size, test_size, batch_size, sampling_temp, top_p, quant, name, outdir,\
-    specific_smiles, weights_file, inner_al, qed_t, sascore_t, tanimoto_t, ta_direction, subset, mw, skip_third_filter,\
-    trifurcated,restart, seed_value, scale_value, gen_seed, qed_weights = parseArg()
+    specific_smiles, weights_file, inner_al, qed_t, ab_mps_t, sascore_t, tanimoto_t, ta_direction, subset, mw, skip_third_filter,\
+    trifurcated, zw_min_dist, restart, seed_value, scale_value, gen_seed, qed_weights = parseArg()
 
     
     # Print relevant information to log
@@ -481,6 +491,7 @@ def main():
     print('  - Generation seed:', gen_seed)
     print('  - Inner Active Learning Cycles:', inner_al)
     print('  - QED threshold:', qed_t)
+    print('  - AB-MPS max threshold:', ab_mps_t)
     print('  - SAscore threshold:', sascore_t)
     print('  - Tanimoto threshold:', tanimoto_t)
     print('  - Tanimoto direction:', ta_direction)
@@ -488,12 +499,12 @@ def main():
     print('  - Molecular weight:', mw)      
     print('  - Skip third filter (PAINS/Brenk/NIH/CHEMBL):', skip_third_filter)
     print('  - Trifurcated filter:', 'disabled' if not trifurcated else f'enabled (min branch size: {trifurcated})')
+    print('  - Zwitterion endpoint filter:', 'disabled' if zw_min_dist is None else f'enabled (min dist: {zw_min_dist} bonds)')
     print('  - QED weights:', 'default' if qed_weights is None else qed_weights)
     print('\n')
     
     # Generate the output directory
-    if not os.path.exists(outdir):
-        os.mkdir(outdir)
+    os.makedirs(outdir, exist_ok=True)
     inner_output_dir = outdir + '/' + name
 
     if restart:
@@ -505,8 +516,7 @@ def main():
         print(f'\nRounds done: {round-1}\n')
     else:
         round = 1
-        if not os.path.exists(inner_output_dir + '_' + str(round)):
-            os.mkdir(inner_output_dir + '_' + str(round))
+        os.makedirs(inner_output_dir + '_' + str(round), exist_ok=True)
 
     # Generate a plot with the length of the SMILES of the general training set and return 2*median of the length of the SMILES
     max_len = length_scanner(general_smiles)
@@ -539,8 +549,7 @@ def main():
     if not weights_file and not restart:
         print('Training of the general set...')        
         training_dir = outdir + '/pretrained'
-        if not os.path.exists(training_dir):
-            os.mkdir(training_dir)
+        os.makedirs(training_dir, exist_ok=True)
             
         train_and_evaluate_model(model, train_x, train_y, val_x, val_y, test_x, test_y, batch_size, num_epochs, training_dir, 'general', '_weights.hdf5', 'Start', True)
         weights_file = training_dir + '/general_weights.hdf5'
@@ -651,9 +660,9 @@ def main():
             valid_generated=valid_generated, total_attempts=total_attempts,
             not_valid=not_valid, name=name, outdir=inner_output_dir+'_'+str(i), seed=seed_value,
             weights_file=weights_file,
-            val_size_param=val_size, test_size_param=test_size, qed_threshold=qed_t, sascore_threshold=sascore_t, 
+            val_size_param=val_size, test_size_param=test_size, qed_threshold=qed_t, ab_mps_threshold=ab_mps_t, sascore_threshold=sascore_t, 
             tanimoto_threshold=tanimoto_t, ta_direction=ta_direction, subset=subset, mw=mw, 
-            skip_third_filter=skip_third_filter, trifurcated=trifurcated, restart=restart, 
+            skip_third_filter=skip_third_filter, trifurcated=trifurcated, zw_min_dist=zw_min_dist, restart=restart, 
             scale=scale_value, gen_seed=gen_seed, inner_al=inner_al, round_num=i)
         
         timef0 = time.time()
@@ -679,8 +688,8 @@ def main():
         else:
             raise ValueError('Indicate the ta_direction: < or >')
     
-        # Apply 2nd filter: Thresholds (QED, SA and Tanimoto) physicochemical properties
-        df_with_threshold = apply_thresholds(df_gen_props=df_gen_props, property_thresholds=[qed_t, sascore_t, tanimoto_t], mw=mw, ta_direction=ta_direction)
+        # Apply 2nd filter: Thresholds (QED / AB-MPS, SA and Tanimoto) physicochemical properties
+        df_with_threshold = apply_thresholds(df_gen_props=df_gen_props, property_thresholds=[qed_t, ab_mps_t, sascore_t, tanimoto_t], mw=mw, ta_direction=ta_direction)
         print('SECOND FILTER:')
         print(len(df_with_threshold))
         
@@ -704,16 +713,19 @@ def main():
         if trifurcated:
             df_filtered = apply_trifurcated_filter(df_filtered, min_branch_size=trifurcated)
             print(f'  - Compounds after trifurcated filter (min branch size {trifurcated}): ', len(df_filtered))
-        
+
+        if zw_min_dist:
+            df_filtered = apply_zwitterion_filter(df_filtered, min_bonds=zw_min_dist)
+            print(f'  - Compounds after zwitterion endpoint filter (min dist {zw_min_dist}): ', len(df_filtered))
+
         if len(df_filtered)==0:
-            raise Exception("No valid compounds generated after the trifurcated filter.")
+            raise Exception("No valid compounds generated after the additional filters.")
         
         timef = time.time() - timef0
         print('Time Filters Chemical AL: ', timef, 'seconds')
         print('Time human readable:', time.strftime("%H:%M:%S", time.gmtime(timef)))
 
-        if not os.path.exists(inner_output_dir + '_' + str(i+1)):
-            os.mkdir(inner_output_dir + '_' + str(i+1))
+        os.makedirs(inner_output_dir + '_' + str(i+1), exist_ok=True)
             
         # Generate a CSV with the filtered compounds
         df_filtered.to_csv(inner_output_dir + '_' + str(i+1) + '/' + name + '_generated_smiles_threshold_' + str(i) + '.csv')
@@ -747,9 +759,9 @@ def main():
             not_valid=not_valid, name=name, outdir=final_report_dir,
             execution_time=time_total, seed=seed_value,
             weights_file=weights_file,
-            val_size_param=val_size, test_size_param=test_size, qed_threshold=qed_t, sascore_threshold=sascore_t, 
+            val_size_param=val_size, test_size_param=test_size, qed_threshold=qed_t, ab_mps_threshold=ab_mps_t, sascore_threshold=sascore_t, 
             tanimoto_threshold=tanimoto_t, ta_direction=ta_direction, subset=subset, mw=mw, 
-            skip_third_filter=skip_third_filter, trifurcated=trifurcated, restart=restart, 
+            skip_third_filter=skip_third_filter, trifurcated=trifurcated, zw_min_dist=zw_min_dist, restart=restart, 
             scale=scale_value, gen_seed=gen_seed, inner_al=inner_al, round_num=inner_al)
 
 if __name__ == "__main__":

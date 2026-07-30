@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 import rdkit.Chem as Chem
-from rdkit.Chem import rdMolDescriptors, Descriptors, Lipinski, QED, rdFingerprintGenerator
+from rdkit.Chem import rdMolDescriptors, Descriptors, Lipinski, QED, rdFingerprintGenerator, rdmolops
 from rdkit.Chem.FilterCatalog import FilterCatalog, FilterCatalogParams
 from rdkit.Chem import AllChem, DataStructs
 from . import sascorer
@@ -21,8 +21,8 @@ from collections import Counter
 def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, batch_size, sampling_temp, top_p, 
                  quantity_requested, valid_generated, total_attempts, not_valid, name, outdir, 
                  execution_time=None, seed=None, weights_file=None, val_size_param=None, test_size_param=None,
-                 qed_threshold=None, sascore_threshold=None, tanimoto_threshold=None, ta_direction=None, 
-                 subset=None, mw=None, skip_third_filter=None, trifurcated=None, restart=None, 
+                 qed_threshold=None, ab_mps_threshold=None, sascore_threshold=None, tanimoto_threshold=None, ta_direction=None, 
+                 subset=None, mw=None, skip_third_filter=None, trifurcated=None, zw_min_dist=None, restart=None, 
                  scale=None, gen_seed=None, inner_al=None, round_num=None, general_smiles=None, specific_smiles=None):
     with open(outdir + "/report_" + name + '.out', 'w+') as r:
         r.write('#######################################\n')
@@ -69,6 +69,8 @@ def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, b
         # Filter thresholds
         if qed_threshold is not None:
             r.write('QED threshold: ' + str(qed_threshold) + '\n')
+        if ab_mps_threshold is not None:
+            r.write('AB-MPS max threshold: ' + str(ab_mps_threshold) + '\n')
         if sascore_threshold is not None:
             r.write('SAscore threshold: ' + str(sascore_threshold) + '\n')
         if tanimoto_threshold is not None:
@@ -83,6 +85,8 @@ def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, b
             r.write('Skip PAINS/Brenk/NIH/CHEMBL filter: ' + str(skip_third_filter) + '\n')
         if trifurcated is not None:
             r.write('Trifurcated filter (min branch size): ' + str(trifurcated) + '\n')
+        if zw_min_dist is not None:
+            r.write('Zwitterion endpoint filter (min_bonds): ' + str(zw_min_dist) + '\n')
         r.write('#######################################\n')
         
         # Dataset sizes
@@ -224,8 +228,13 @@ def compute_properties(smi, qed_weights=None):
     tpsa = round(Descriptors.TPSA(mol), 2)
     nhd = Lipinski.NumHDonors(mol)
     nha = Lipinski.NumHAcceptors(mol)
+    nrb = Lipinski.NumRotatableBonds(mol)
+    nar = rdMolDescriptors.CalcNumAromaticRings(mol)
+    # AB-MPS (AbbVie MPO for bRo5): |logD - 3| + nAR + nRB.
+    # Here we use cLogP as a practical proxy for logD when logD is unavailable.
+    ab_mps = round(abs(logp - 3.0) + nar + nrb, 2)
 
-    return smi, sa, qed, mw, logp, tpsa, nhd, nha
+    return smi, sa, qed, mw, logp, tpsa, nhd, nha, nrb, nar, ab_mps
 
 def apply_thresholds(df_gen_props, property_thresholds, mw=None, ta_direction=None):
     '''
@@ -233,7 +242,7 @@ def apply_thresholds(df_gen_props, property_thresholds, mw=None, ta_direction=No
 
     df_gen_props_t = df_gen_props.copy()
 
-    qed_t, sascore_t, tanimoto_t = property_thresholds
+    qed_t, ab_mps_t, sascore_t, tanimoto_t = property_thresholds
 
     if qed_t is not None:
         df_gen_props_t = df_gen_props_t[df_gen_props_t['QED'] >= qed_t]
@@ -246,6 +255,12 @@ def apply_thresholds(df_gen_props, property_thresholds, mw=None, ta_direction=No
         print('  - Compounds after SAscore:', len(df_gen_props_t))
     else:
         print('  - Skipping SAscore filter (disabled).')
+
+    if ab_mps_t is not None:
+        df_gen_props_t = df_gen_props_t[df_gen_props_t['AB_MPS'] <= ab_mps_t]
+        print('  - Compounds after AB-MPS:', len(df_gen_props_t))
+    else:
+        print('  - Skipping AB-MPS filter (disabled).')
 
     if tanimoto_t is not None:
         if ta_direction == '<':
@@ -264,7 +279,7 @@ def apply_thresholds(df_gen_props, property_thresholds, mw=None, ta_direction=No
     else:
         print('  - Skipping mw filter (disabled).')
 
-    selected_cols = ['smiles', 'SAscore', 'QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA']
+    selected_cols = ['smiles', 'SAscore', 'QED', 'mw', 'logp', 'tpsa', 'nHD', 'nHA', 'nRB', 'nAR', 'AB_MPS']
     for optional_col in ['tan_mean', 'tan_max']:
         if optional_col in df_gen_props_t.columns:
             selected_cols.append(optional_col)
@@ -774,4 +789,81 @@ def apply_trifurcated_filter(df, min_branch_size=3, exclude_rings=True):
     df['mols'] = df['mols'].apply(lambda mol: is_trifurcated(mol, min_branch_size, exclude_rings))
     df.dropna(subset=['mols'], inplace=True)
 
+    return df
+
+
+# ── Zwitterion endpoint filter ────────────────────────────────────────────────
+
+_ZW_ACIDIC_PATS = [
+    (Chem.MolFromSmarts("[CX3](=O)[OH1]"), 2),                    # COOH
+    (Chem.MolFromSmarts("S(=O)(=O)[OH1]"), 3),                    # SO3H
+    (Chem.MolFromSmarts("P(=O)([OH1])[OH1]"), 2),                 # PO3H2
+    (Chem.MolFromSmarts("P(=O)([OH1])[O]"), 2),                   # PO3H
+    (Chem.MolFromSmarts("c1[nH]nnn1"), 1),                        # tetrazole
+    (Chem.MolFromSmarts("[S](=O)([OH])"), 2),                     # sulfinic acid (SO2H)
+    (Chem.MolFromSmarts("[c][OX2H]"), 1),                         # phenol
+    (Chem.MolFromSmarts("[#16X2H]"), 0),                          # thiol
+    (Chem.MolFromSmarts("P(=O)([OX2H])[OX2][#6]"), 2),            # phosphonate monoester
+    (Chem.MolFromSmarts("S(=O)(=O)[NH]"), 3),                     # sulfonamide
+    (Chem.MolFromSmarts("[NX3H][CX3](=O)[#6][CX3](=O)"), 0),     # imide
+]
+
+_ZW_BASIC_PATS = [
+    (Chem.MolFromSmarts("[NX3;H2;!$(NC=O);!$(NS=O);!$(Nc);!n]"), 0),    # primary amine
+    (Chem.MolFromSmarts("[NX3;H1;!$(NC=O);!$(NS=O);!$(Nc);!n]"), 0),    # secondary amine
+    (Chem.MolFromSmarts("[NX3;H0;!$(NC=O);!$(NS=O);!n;!$(N~[a])]"), 0), # tertiary amine
+    (Chem.MolFromSmarts("NC(=N)"), 0),                            # amidine
+    (Chem.MolFromSmarts("NC(=N)N"), 0),                           # guanidine
+    (Chem.MolFromSmarts("n1ccccc1"), 0),                          # pyridine
+    (Chem.MolFromSmarts("c1ncc[nH]1"), 1),                        # imidazole
+    (Chem.MolFromSmarts("[n;!H]"), 0),                            # aromatic N (pyridine-like)
+    (Chem.MolFromSmarts("N1CCCCC1"), 0),                          # piperidine
+    (Chem.MolFromSmarts("O1CCNCC1"), 0),                          # morpholine
+    (Chem.MolFromSmarts("N1CCCC1"), 0),                           # pyrrolidine
+    (Chem.MolFromSmarts("N1CCNCC1"), 0),                          # piperazine
+]
+
+def _is_endpoint_zwitterion(mol, min_bonds, max_tip_dist):
+    """Return True if mol has an acidic group and a basic group that are:
+    - at least min_bonds apart from each other
+    - both within max_tip_dist bonds of a terminal (degree-1) atom
+    Uses only neutral SMARTS forms — suited for ALGen-generated SMILES."""
+    tips = set(a.GetIdx() for a in mol.GetAtoms() if a.GetDegree() == 1)
+
+    def tip_dist(idx):
+        if idx in tips:
+            return 0
+        others = [t for t in tips if t != idx]
+        return min(len(rdmolops.GetShortestPath(mol, idx, t)) - 1 for t in others) if others else 999
+
+    for ap, ar in _ZW_ACIDIC_PATS:
+        if ap is None:
+            continue
+        for am in mol.GetSubstructMatches(ap):
+            a_idx = am[ar] if ar < len(am) else am[0]
+            if tip_dist(a_idx) > max_tip_dist:
+                continue
+            for bp, br in _ZW_BASIC_PATS:
+                if bp is None:
+                    continue
+                for bm in mol.GetSubstructMatches(bp):
+                    b_idx = bm[br] if br < len(bm) else bm[0]
+                    if a_idx == b_idx:
+                        continue
+                    if tip_dist(b_idx) > max_tip_dist:
+                        continue
+                    d = len(rdmolops.GetShortestPath(mol, a_idx, b_idx)) - 1
+                    if d >= min_bonds:
+                        return True
+    return False
+
+def apply_zwitterion_filter(df, min_bonds=8, max_tip_dist=2):
+    """Keep only molecules that are endpoint zwitterions at pH 7.4:
+    an acidic group (COOH/SO3H/PO3H/tetrazole) and an aliphatic amine both
+    within max_tip_dist bonds of a terminal atom and min_bonds apart."""
+    df['mols'] = df['smiles'].apply(lambda smi: Chem.MolFromSmiles(smi) if pd.notna(smi) else None)
+    df.dropna(subset=['mols'], inplace=True)
+    df['mols'] = df['mols'].apply(
+        lambda mol: mol if _is_endpoint_zwitterion(mol, min_bonds, max_tip_dist) else None)
+    df.dropna(subset=['mols'], inplace=True)
     return df
