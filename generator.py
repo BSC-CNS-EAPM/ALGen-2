@@ -367,7 +367,7 @@ def computing_properties_generated_set(smiles, t_smiles, output_dir, name, df_in
         try:
             smi, sa, qed, mw, logp, tpsa, nhd, nha, nrb, nar, ab_mps = compute_properties(comp, qed_weights=qed_weights)
 
-            if mom == 'initial' or 'restart':
+            if mom in ('initial', 'restart'):
                 if ta_direction == '<':
                     tan_mean, tan_max = tanimoto2(comp, smiles_fps, ta_direction)
                     sims = []
