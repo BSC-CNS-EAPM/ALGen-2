@@ -499,7 +499,7 @@ def main():
     print('  - Molecular weight:', mw)      
     print('  - Skip third filter (PAINS/Brenk/NIH/CHEMBL):', skip_third_filter)
     print('  - Trifurcated filter:', 'disabled' if not trifurcated else f'enabled (min branch size: {trifurcated})')
-    print('  - Zwitterion endpoint filter:', 'disabled' if not zw_min_dist else f'enabled (min dist: {zw_min_dist} bonds)')
+    print('  - Zwitterion endpoint filter:', 'disabled' if zw_min_dist is None else f'enabled (min dist: {zw_min_dist} bonds)')
     print('  - QED weights:', 'default' if qed_weights is None else qed_weights)
     print('\n')
     
