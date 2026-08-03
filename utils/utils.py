@@ -17,6 +17,41 @@ import deepsmiles as ds
 
 from collections import Counter
 
+import os
+import subprocess
+
+
+def code_version():
+    '''
+    One-line description of the ALGen sources actually being executed.
+
+    Runs are launched straight from a working tree rather than an installed
+    package, so the report has to record what the code was at launch time, not
+    what the remote happens to hold later. Resolution is anchored to this file
+    rather than the cwd, since jobs run with --chdir set to the results dir.
+
+    Never raises: a missing git binary, a non-repo copy of the sources or a slow
+    filesystem all degrade to a plain string.
+    '''
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def git(*args):
+        done = subprocess.run(['git', '-C', repo] + list(args),
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=30)
+        if done.returncode != 0:
+            raise RuntimeError('git ' + ' '.join(args) + ' failed')
+        return done.stdout.decode('utf-8', 'replace').strip()
+
+    try:
+        commit = git('rev-parse', 'HEAD')
+        branch = git('rev-parse', '--abbrev-ref', 'HEAD')
+        # A dirty tree means the commit alone does not describe what ran.
+        dirty = ' + UNCOMMITTED CHANGES' if git('status', '--porcelain') else ''
+        return commit + ' (' + branch + ')' + dirty
+    except Exception:
+        return 'unknown - not a git checkout'
+
 
 def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, batch_size, sampling_temp, top_p, 
                  quantity_requested, valid_generated, total_attempts, not_valid, name, outdir, 
@@ -27,6 +62,7 @@ def write_report(train_size, val_size, test_size, test_loss, test_acc, epochs, b
     with open(outdir + "/report_" + name + '.out', 'w+') as r:
         r.write('#######################################\n')
         r.write('Report for generative run ' + name + '\n')
+        r.write('ALGen source revision: ' + code_version() + '\n')
         r.write('#######################################\n')
         
         # Input data
